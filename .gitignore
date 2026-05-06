@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Model weights (too large for git)
+*.bin
+*.safetensors
+*.gguf
+*.pth
+
+# Audio recordings
+assets/input/*.wav
+assets/input/*.mp3
+assets/input/*.flac
+
+# Logs
+assets/logs/*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env

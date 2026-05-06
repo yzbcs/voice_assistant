@@ -1,0 +1,17 @@
+# Install a CUDA-compatible torch build separately before this file.
+# Example: follow https://pytorch.org/get-started/locally/ for your CUDA/driver.
+
+qwen-asr
+vllm>=0.12.0
+mistral-common>=1.8.6
+
+langchain>=0.3
+langchain-openai>=0.3
+langchain-community>=0.3
+
+transformers>=4.46
+accelerate
+numpy
+sounddevice
+scipy
+modelscope

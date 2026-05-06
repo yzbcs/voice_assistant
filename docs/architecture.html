@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>语音助手工作流 — 架构总览</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "SF Pro", "PingFang SC", sans-serif; background: #0f1117; color: #e0e0e0; padding: 40px; line-height: 1.6; }
+
+h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
+.subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
+
+.section { margin-bottom: 40px; }
+.section-title { font-size: 18px; color: #c9a0ff; margin-bottom: 16px; border-bottom: 1px solid #2a2a3a; padding-bottom: 8px; }
+
+/* Architecture Flow */
+.arch-flow { display: flex; align-items: stretch; gap: 12px; flex-wrap: wrap; justify-content: center; margin-bottom: 24px; }
+.arch-node { background: #1a1d2e; border: 1px solid #2d3154; border-radius: 12px; padding: 20px 24px; min-width: 180px; text-align: center; position: relative; flex: 1; max-width: 240px; }
+.arch-node.highlight { border-color: #7eb8ff; background: #1a2035; }
+.arch-node .icon { font-size: 32px; margin-bottom: 8px; }
+.arch-node .label { font-size: 14px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
+.arch-node .desc { font-size: 12px; color: #888; }
+.arch-arrow { display: flex; align-items: center; color: #555; font-size: 24px; min-width: 40px; justify-content: center; }
+
+/* File List */
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+.file-card { background: #1a1d2e; border: 1px solid #2d3154; border-radius: 10px; padding: 16px; }
+.file-card .fname { font-family: "SF Mono", monospace; font-size: 14px; color: #7eb8ff; margin-bottom: 6px; }
+.file-card .fdesc { font-size: 13px; color: #aaa; }
+
+/* Tool Table */
+.tool-table { width: 100%; border-collapse: collapse; }
+.tool-table th { text-align: left; color: #c9a0ff; font-size: 13px; padding: 8px 12px; border-bottom: 1px solid #2a2a3a; }
+.tool-table td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #1e2030; }
+.tool-table td:first-child { font-family: "SF Mono", monospace; color: #7eb8ff; }
+.status-ok { color: #6ecf8e; }
+.status-pending { color: #f0c060; }
+
+/* Config Table */
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.config-item { background: #1a1d2e; border: 1px solid #2d3154; border-radius: 8px; padding: 12px 16px; }
+.config-key { font-family: "SF Mono", monospace; font-size: 12px; color: #c9a0ff; margin-bottom: 4px; }
+.config-val { font-family: "SF Mono", monospace; font-size: 13px; color: #e0e0e0; word-break: break-all; }
+.config-hint { font-size: 11px; color: #666; margin-top: 4px; }
+
+/* Quick Start */
+.quick-start { background: #1a2035; border: 1px solid #2d3154; border-radius: 10px; padding: 20px 24px; }
+.quick-start .step { display: flex; gap: 12px; margin-bottom: 12px; align-items: flex-start; }
+.quick-start .step-num { background: #7eb8ff; color: #0f1117; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+.quick-start .step-content { flex: 1; }
+.quick-start .step-title { font-size: 14px; font-weight: 600; color: #e0e0e0; }
+.quick-start .step-code { font-family: "SF Mono", monospace; font-size: 12px; color: #6ecf8e; background: #12141f; padding: 6px 10px; border-radius: 6px; margin-top: 6px; display: block; }
+
+/* Add Tool Guide */
+.add-tool { background: #1d1a2e; border: 1px solid #3d2d54; border-radius: 10px; padding: 20px 24px; }
+.add-tool code { font-family: "SF Mono", monospace; background: #12141f; padding: 2px 6px; border-radius: 4px; color: #6ecf8e; font-size: 12px; }
+.add-tool pre { background: #12141f; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: "SF Mono", monospace; font-size: 12px; color: #c9d0dc; line-height: 1.5; margin: 8px 0; }
+</style>
+</head>
+<body>
+
+<h1>语音助手工作流</h1>
+<p class="subtitle">Ministral-3-8B + Qwen3-ASR + LangChain | H200 GPU | Tool Calling Agent</p>
+
+<!-- Architecture -->
+<div class="section">
+  <div class="section-title">架构流程</div>
+  <div class="arch-flow">
+    <div class="arch-node">
+      <div class="icon">🎙️</div>
+      <div class="label">麦克风录音</div>
+      <div class="desc">sounddevice 采集音频</div>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-node highlight">
+      <div class="icon">🔊</div>
+      <div class="label">Qwen3-ASR</div>
+      <div class="desc">语音 → 文本（独立模块）</div>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-node highlight">
+      <div class="icon">🤖</div>
+      <div class="label">LangChain Agent</div>
+      <div class="desc">Ministral-3-8B + Tools</div>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-node">
+      <div class="icon">💬</div>
+      <div class="label">文本回复</div>
+      <div class="desc">支持 Tool Calling 结果</div>
+    </div>
+  </div>
+</div>
+
+<!-- Files -->
+<div class="section">
+  <div class="section-title">项目文件</div>
+  <div class="file-grid">
+    <div class="file-card">
+      <div class="fname">config.py</div>
+      <div class="fdesc">模型路径、vLLM 参数、录音参数等统一配置</div>
+    </div>
+    <div class="file-card">
+      <div class="fname">requirements.txt</div>
+      <div class="fdesc">Python 依赖清单</div>
+    </div>
+    <div class="file-card">
+      <div class="fname">step1_setup_vllm.py</div>
+      <div class="fdesc">启动 vLLM 服务，加载 Ministral-3-8B，含健康检查</div>
+    </div>
+    <div class="file-card">
+      <div class="fname">step2_asr_module.py</div>
+      <div class="fdesc">Qwen3-ASR 语音识别模块，提供 transcribe() 接口</div>
+    </div>
+    <div class="file-card">
+      <div class="fname">step3_agent_core.py</div>
+      <div class="fdesc">LangChain Agent 核心：LLM + Tool Calling + 多轮对话</div>
+    </div>
+    <div class="file-card">
+      <div class="fname">step4_main.py</div>
+      <div class="fdesc">主入口：录音 → ASR → Agent → 输出，支持语音/文本模式</div>
+    </div>
+  </div>
+</div>
+
+<!-- Tools -->
+<div class="section">
+  <div class="section-title">已注册工具</div>
+  <table class="tool-table">
+    <thead>
+      <tr><th>工具名</th><th>功能</th><th>状态</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>get_weather(city)</td><td>查询城市天气（wttr.in API）</td><td class="status-ok">✅ 可用</td></tr>
+      <tr><td>calculator(expression)</td><td>数学表达式计算</td><td class="status-ok">✅ 可用</td></tr>
+      <tr><td>get_current_time()</td><td>获取当前日期时间</td><td class="status-ok">✅ 可用</td></tr>
+      <tr><td>web_search(query)</td><td>网络搜索</td><td class="status-pending">⚠️ 预留接口</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Config -->
+<div class="section">
+  <div class="section-title">配置项</div>
+  <div class="config-grid">
+    <div class="config-item">
+      <div class="config-key">LLM_MODEL_PATH</div>
+      <div class="config-val">/path/to/Ministral-3-8B-Instruct-2512</div>
+      <div class="config-hint">⚠️ 需填写实际路径</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">ASR_MODEL_PATH</div>
+      <div class="config-val">/path/to/Qwen3-ASR</div>
+      <div class="config-hint">⚠️ 需填写实际路径</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">VLLM_PORT</div>
+      <div class="config-val">8000</div>
+      <div class="config-hint">vLLM 服务端口</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">VLLM_GPU_MEMORY_UTILIZATION</div>
+      <div class="config-val">0.85</div>
+      <div class="config-hint">H200 80GB 充裕</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">RECORD_SAMPLE_RATE</div>
+      <div class="config-val">16000</div>
+      <div class="config-hint">录音采样率</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">RECORD_DURATION</div>
+      <div class="config-val">5</div>
+      <div class="config-hint">0=手动停止</div>
+    </div>
+  </div>
+</div>
+
+<!-- Quick Start -->
+<div class="section">
+  <div class="section-title">快速开始</div>
+  <div class="quick-start">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-content">
+        <div class="step-title">配置模型路径</div>
+        <span class="step-code">编辑 config.py，填写 LLM_MODEL_PATH 和 ASR_MODEL_PATH</span>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-content">
+        <div class="step-title">安装依赖</div>
+        <span class="step-code">pip install -r requirements.txt</span>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-content">
+        <div class="step-title">启动 vLLM 服务</div>
+        <span class="step-code">python3 step1_setup_vllm.py</span>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-content">
+        <div class="step-title">运行助手</div>
+        <span class="step-code">python3 step4_main.py --mode text</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Tool Guide -->
+<div class="section">
+  <div class="section-title">🔧 如何添加自定义工具</div>
+  <div class="add-tool">
+    <p>在 <code>step3_agent_core.py</code> 中三步即可添加新工具：</p>
+    <p><strong>1. 定义工具函数</strong>（必须 <code>@tool</code> + 类型注解 + docstring）：</p>
+<pre>@tool
+def my_new_tool(param1: str, param2: int) -> str:
+    """工具描述（LLM 依据此判断是否调用）"""
+    return f"结果: {param1} {param2}"</pre>
+    <p><strong>2. 注册到 TOOLS 列表</strong>：</p>
+<pre>TOOLS = [get_weather, calculator, get_current_time, web_search, my_new_tool]</pre>
+    <p><strong>3. 重启助手</strong>，LLM 会自动识别新工具。</p>
+    <p style="margin-top:12px;color:#888;">规范：必须 <code>@tool</code> | 完整类型注解 | 清晰 docstring | 返回 <code>str</code> | 自行处理异常</p>
+  </div>
+</div>
+
+</body>
+</html>
