@@ -309,15 +309,15 @@ def main():
     print("[初始化] Agent 就绪")
 
     if mode == "stream":
-        # 流式模式：vLLM 后端 ASR
-        print("[初始化] 正在加载 ASR 模型 (vLLM streaming)...")
+        # 流式模式：vLLM Transcriptions API 后端
+        print("[初始化] 正在连接 ASR vLLM 服务...")
         asr = ASRModule(streaming=True)
-        if asr.model is None:
-            print("[ERROR] ASR 模型加载失败，请检查 config.ASR_MODEL_PATH")
+        if asr.client is None:
+            print("[ERROR] ASR API 客户端初始化失败，请检查 config.ASR_MODEL_PATH")
             print("[提示] 切换到文本模式...")
             run_text_mode(assistant)
         else:
-            print("[初始化] ASR 流式模型就绪")
+            print("[初始化] ASR API 就绪")
             run_streaming_mode(assistant, asr)
     elif mode == "voice":
         # 语音模式：transformers 后端 ASR

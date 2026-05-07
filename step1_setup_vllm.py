@@ -89,6 +89,7 @@ def start_vllm_server():
         # 等待服务就绪
         if wait_for_vllm():
             print("[vLLM] 服务已启动，可以开始使用")
+            print_asr_start_command()
         proc.wait()
     except KeyboardInterrupt:
         print("\n[vLLM] 收到中断信号，停止服务...")
@@ -96,6 +97,23 @@ def start_vllm_server():
         proc.wait(timeout=10)
         log_file.close()
         print("[vLLM] 服务已停止")
+
+
+def print_asr_start_command():
+    """打印 ASR vLLM 服务的启动命令（需在另一终端运行）"""
+    model_path = config.ASR_MODEL_PATH
+    if "/path/to/" in model_path:
+        print("[ASR] 请先在 config.py 中设置 ASR_MODEL_PATH")
+        return
+    cmd = (
+        f"vllm serve {model_path}"
+        f" --host {config.ASR_VLLM_HOST}"
+        f" --port {config.ASR_VLLM_PORT}"
+        f" --gpu-memory-utilization {config.ASR_VLLM_GPU_MEMORY_UTILIZATION}"
+        f" --dtype auto"
+    )
+    print(f"\n[ASR] 如需语音功能，请在另一终端运行:")
+    print(f"  {cmd}")
 
 
 if __name__ == "__main__":

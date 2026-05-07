@@ -2,32 +2,40 @@
 
 提供两种识别模式:
   1. 文件模式: transcribe(audio_path) — 从文件路径识别（transformers 后端）
-  2. 流式模式: transcribe_audio_array(audio) — 从 numpy 数组流式识别（vLLM 后端）
+  2. API 模式: transcribe_via_api(audio_path_or_array) — 通过 vLLM Transcriptions API 识别
+
+vLLM 0.19.x 原生支持 Qwen3-ASR，无需 qwen-asr[vllm] 包。
 
 用法:
     from step2_asr_module import ASRModule
 
-    # 文件模式
+    # 文件模式（transformers 后端，需在进程内加载模型）
     asr = ASRModule()
     text = asr.transcribe("test.wav")
 
-    # 流式模式
+    # API 模式（vLLM Transcriptions API，需先启动 ASR 服务）
     asr = ASRModule(streaming=True)
+    text = asr.transcribe_via_api("test.wav")
     text = asr.transcribe_audio_array(audio_ndarray)
 
-支持的音频格式: wav, mp3, flac
+启动 ASR 服务:
+    vllm serve /path/to/Qwen3-ASR-0.6B --port 8001 --gpu-memory-utilization 0.15 --dtype auto
 """
 
 from __future__ import annotations
 
+import io
 import os
+import struct
+import tempfile
+import wave
 
 import numpy as np
 
 import config
 
 
-LANGUAGE_ALIASES = {
+TRANSFORMERS_LANGUAGE_ALIASES = {
     "auto": None,
     "zh": "Chinese",
     "cn": "Chinese",
@@ -38,28 +46,43 @@ LANGUAGE_ALIASES = {
     "英文": "English",
 }
 
+API_LANGUAGE_ALIASES = {
+    "auto": None,
+    "zh": "zh",
+    "cn": "zh",
+    "chinese": "zh",
+    "中文": "zh",
+    "en": "en",
+    "english": "en",
+    "英文": "en",
+}
+
 
 class ASRModule:
     """Qwen3-ASR 语音识别模块
 
     支持两种后端:
       - transformers 后端 (streaming=False): from_pretrained + transcribe(file)
-      - vLLM 后端 (streaming=True): Qwen3ASRModel.LLM + 流式推理
+      - vLLM API 后端 (streaming=True): 通过 Transcriptions API 识别（需先启动 ASR vLLM 服务）
 
     初始化参数:
         model_path: 模型本地路径，默认从 config.ASR_MODEL_PATH 读取
         device: 推理设备，默认 "cuda"
         language: 识别语言，默认从 config.ASR_LANGUAGE 读取
-        streaming: 是否使用 vLLM 流式后端，默认从 config.ASR_STREAMING 读取
+        streaming: 是否使用 vLLM API 后端，默认从 config.ASR_STREAMING 读取
     """
 
     def __init__(self, model_path: str | None = None, device: str = "cuda",
                  language: str | None = None, streaming: bool | None = None):
         self.model_path = model_path or config.ASR_MODEL_PATH
         self.device = device
-        self.language = self._normalize_language(language or config.ASR_LANGUAGE)
+        raw_language = language or config.ASR_LANGUAGE
+        self.language = self._normalize_transformers_language(raw_language)
+        self.api_language = self._normalize_api_language(raw_language)
         self.streaming = streaming if streaming is not None else config.ASR_STREAMING
         self.model = None
+        self.client = None
+        self.model_name = None
 
         if "/path/to/" in self.model_path:
             print(f"[ASR] WARNING: 请先在 config.py 中设置 ASR_MODEL_PATH")
@@ -67,19 +90,33 @@ class ASRModule:
             return
 
         if self.streaming:
-            self._load_streaming_model()
+            self._init_vllm_client()
         else:
             self._load_model()
 
     @staticmethod
-    def _normalize_language(language: str | None) -> str | None:
-        """转换为 qwen-asr 官方 transcribe 接口接受的语言名。"""
+    def _normalize_transformers_language(language: str | None) -> str | None:
+        """转换为 qwen-asr transformers 后端接受的完整语言名。"""
         if language is None:
             return None
         normalized = str(language).strip()
         if not normalized:
             return None
-        return LANGUAGE_ALIASES.get(normalized.lower(), normalized)
+        return TRANSFORMERS_LANGUAGE_ALIASES.get(normalized.lower(), normalized)
+
+    @staticmethod
+    def _normalize_api_language(language: str | None) -> str | None:
+        """转换为 vLLM Transcriptions API 接受的语言代码。"""
+        if language is None:
+            return None
+        normalized = str(language).strip()
+        if not normalized:
+            return None
+        return API_LANGUAGE_ALIASES.get(normalized.lower(), normalized)
+
+    def _language_code(self) -> str | None:
+        """返回语言代码供 API 使用。"""
+        return self.api_language
 
     def _load_model(self):
         """通过 qwen-asr transformers 后端加载模型（文件模式）"""
@@ -98,25 +135,46 @@ class ASRModule:
         )
         print(f"[ASR] 模型加载完成，设备: {device_map}, language: {self.language or 'auto'}")
 
-    def _load_streaming_model(self):
-        """通过 qwen-asr vLLM 后端加载模型（流式模式）
+    def _init_vllm_client(self):
+        """初始化 vLLM Transcriptions API 客户端
 
-        使用 Qwen3ASRModel.LLM() 初始化，支持 init_streaming_state + streaming_transcribe。
-        gpu_memory_utilization=0.3 对 0.6B 模型足够，避免和 LLM 的 vLLM 争显存。
+        使用 OpenAI 兼容客户端连接到 vLLM ASR 服务。
+        需要先在另一终端启动: vllm serve <model_path> --port 8001
         """
-        from qwen_asr import Qwen3ASRModel
+        from openai import OpenAI
 
-        print(f"[ASR] 正在加载模型 (vLLM streaming): {self.model_path}")
-        self.model = Qwen3ASRModel.LLM(
-            model=self.model_path,
-            gpu_memory_utilization=0.3,
-            max_inference_batch_size=1,
-            max_new_tokens=512,
+        host = config.ASR_VLLM_HOST
+        port = config.ASR_VLLM_PORT
+        self.model_name = os.path.basename(self.model_path.rstrip(os.sep))
+
+        print(f"[ASR] 初始化 vLLM API 客户端: http://{host}:{port}/v1")
+        print(f"[ASR] 模型名: {self.model_name}")
+        print(f"[ASR] 请确保已在另一终端启动 ASR 服务:")
+        print(f"  vllm serve {self.model_path} --port {port} --gpu-memory-utilization {config.ASR_VLLM_GPU_MEMORY_UTILIZATION} --dtype auto")
+
+        self.client = OpenAI(
+            base_url=f"http://{host}:{port}/v1",
+            api_key="EMPTY",
         )
-        print(f"[ASR] vLLM 流式模型加载完成, language: {self.language or 'auto'}")
+
+        # 检查服务是否在线
+        try:
+            models = self.client.models.list()
+            model_ids = [m.id for m in models.data]
+            print(f"[ASR] 服务在线，可用模型: {model_ids}")
+            if self.model_name not in model_ids:
+                print(f"[ASR] WARNING: 模型名 '{self.model_name}' 不在服务端列表中")
+                print(f"  服务端模型: {model_ids}")
+                if model_ids:
+                    self.model_name = model_ids[0]
+                    print(f"  自动切换为: {self.model_name}")
+        except Exception as e:
+            print(f"[ASR] WARNING: 无法连接 ASR 服务 ({e})")
+            print(f"  请先启动: vllm serve {self.model_path} --port {port}")
+            self.client = None
 
     def transcribe(self, audio_path: str) -> str:
-        """将音频文件转为文本
+        """将音频文件转为文本（transformers 后端）
 
         参数:
             audio_path: 音频文件路径，支持 wav/mp3/flac
@@ -132,7 +190,7 @@ class ASRModule:
 
         results = self.model.transcribe(
             audio=audio_path,
-            language=self.language,  # None=自动检测；若自动检测效果差，强制指定如 "Chinese"
+            language=self.language,
         )
         if not results:
             return ""
@@ -144,11 +202,36 @@ class ASRModule:
             return str(result["text"]).strip()
         return str(result).strip()
 
-    def transcribe_audio_array(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
-        """将 numpy 音频数组通过 vLLM 流式 ASR 转为文本
+    def transcribe_via_api(self, audio_path: str) -> str:
+        """通过 vLLM Transcriptions API 识别音频文件
 
-        流程: init_streaming_state → 分段 streaming_transcribe → finish_streaming_transcribe
-        每送入一个 chunk 都会增量更新 state.text，最终返回完整识别结果。
+        参数:
+            audio_path: 音频文件路径
+
+        返回:
+            识别出的文本字符串
+        """
+        if self.client is None:
+            return "[ERROR] ASR API 客户端未初始化"
+
+        if not os.path.exists(audio_path):
+            return f"[ERROR] 音频文件不存在: {audio_path}"
+
+        try:
+            with open(audio_path, "rb") as f:
+                transcription = self.client.audio.transcriptions.create(
+                    model=self.model_name,
+                    file=f,
+                    language=self._language_code(),
+                )
+            return transcription.text.strip()
+        except Exception as e:
+            return f"[ERROR] ASR API 调用失败: {e}"
+
+    def transcribe_audio_array(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+        """将 numpy 音频数组通过 vLLM Transcriptions API 转为文本
+
+        将 numpy 数组编码为 WAV 格式，通过 API 发送。
 
         参数:
             audio: PCM 音频数据（int16 或 float32），单声道
@@ -157,38 +240,63 @@ class ASRModule:
         返回:
             识别出的文本字符串
         """
-        if self.model is None:
-            return "[ERROR] 流式 ASR 模型未加载"
-
-        # 统一转 float32 并 normalize 到 [-1, 1]
-        wav = audio.astype(np.float32)
-        if wav.dtype == np.float32 and np.max(np.abs(wav)) > 1.0:
-            wav = wav / 32768.0
+        if self.client is None:
+            return "[ERROR] ASR API 客户端未初始化"
 
         # 重采样到 16kHz
-        if sample_rate != 16000:
+        if sample_rate != config.STREAM_SAMPLE_RATE:
             import scipy.signal
-            wav = scipy.signal.resample_poly(wav, 16000, sample_rate)
+            if audio.dtype in (np.int16, np.int32):
+                audio = audio.astype(np.float32)
+                if np.max(np.abs(audio)) > 1.0:
+                    audio = audio / 32768.0
+            audio = scipy.signal.resample_poly(audio, config.STREAM_SAMPLE_RATE, sample_rate).astype(np.float32)
 
-        # 流式推理：分段送入 ASR
-        chunk_sec = config.ASR_CHUNK_SIZE_SEC
-        state = self.model.init_streaming_state(
-            unfixed_chunk_num=2,
-            unfixed_token_num=5,
-            chunk_size_sec=chunk_sec,
-        )
-        step = int(16000 * chunk_sec)
-        pos = 0
-        while pos < wav.shape[0]:
-            seg = wav[pos : pos + step]
-            self.model.streaming_transcribe(seg, state)
-            pos += step
-            if pos < wav.shape[0]:
-                print(f"\r[ASR 流式] 当前识别: {state.text}", end="", flush=True)
+        # 转 int16
+        if audio.dtype == np.float32 or audio.dtype == np.float64:
+            if np.max(np.abs(audio)) <= 1.0:
+                audio = (audio * 32767).astype(np.int16)
+            else:
+                audio = audio.astype(np.int16)
+        elif audio.dtype != np.int16:
+            audio = audio.astype(np.int16)
 
-        self.model.finish_streaming_transcribe(state)
-        print()  # 换行
-        return state.text.strip()
+        # 单声道
+        if audio.ndim > 1:
+            audio = audio[:, 0]
+
+        # 编码为 WAV bytes
+        wav_bytes = self._encode_wav(audio, config.STREAM_SAMPLE_RATE)
+
+        # 通过 API 发送
+        try:
+            transcription = self.client.audio.transcriptions.create(
+                model=self.model_name,
+                file=("audio.wav", wav_bytes, "audio/wav"),
+                language=self._language_code(),
+            )
+            return transcription.text.strip()
+        except Exception as e:
+            return f"[ERROR] ASR API 调用失败: {e}"
+
+    @staticmethod
+    def _encode_wav(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
+        """将 int16 numpy 数组编码为 WAV 格式的 bytes
+
+        参数:
+            audio: int16 单声道音频数组
+            sample_rate: 采样率
+
+        返回:
+            WAV 文件的 bytes
+        """
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio.tobytes())
+        return buf.getvalue()
 
 
 def quick_transcribe(audio_path: str, model_path: str | None = None) -> str:
@@ -212,6 +320,8 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
         print("用法: python3 step2_asr_module.py <audio_path> [model_path]")
+        print("  语音模式: 使用 transformers 后端直接识别")
+        print("  API 模式: 需先启动 vllm serve ASR 服务")
         sys.exit(1)
 
     audio = sys.argv[1]

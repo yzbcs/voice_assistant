@@ -7,11 +7,12 @@
 ## 架构
 
 ```
-麦克风录音 / 音频文件 → Qwen3-ASR (独立模块) → LangChain Agent (Ministral-3-8B + Tools) → 文本回复
-                              ↑                                    ↓
-                     step2_asr_module.py               Tool Calling (天气/计算/搜索等)
-                     ├─ transformers 后端 (文件模式)
-                     └─ vLLM 后端 (流式模式)
+终端 1: vllm serve Ministral-3-8B (port 8000)     — LLM 服务
+终端 2: vllm serve Qwen3-ASR-0.6B (port 8001)     — ASR 服务
+
+step4_main.py:
+  录音 / 音频文件 → vLLM Transcriptions API (port 8001) → 识别文本
+                  → LangChain Agent (port 8000) → Tool Calling → 文本回复
 ```
 
 ## 文件清单
@@ -20,18 +21,18 @@
 |------|------|
 | `config.py` | 配置文件：模型路径、vLLM 参数、ASR 参数、录音参数 |
 | `requirements.txt` | Python 依赖 |
-| `step1_setup_vllm.py` | 启动 vLLM 服务加载 Ministral-3-8B |
-| `step2_asr_module.py` | Qwen3-ASR 语音识别模块（支持 transformers/vLLM 双后端）|
+| `step1_setup_vllm.py` | 启动 LLM vLLM 服务（终端 1） |
+| `step2_asr_module.py` | ASR 模块：transformers 后端（文件模式）+ vLLM Transcriptions API（流式模式）|
 | `step3_agent_core.py` | LangChain Agent 核心（LLM + Tools + 多轮对话）|
 | `step4_main.py` | 主入口：录音 → ASR → Agent → 输出 |
 
 ## 显存占用预估（H200 80GB）
 
-| 模型 | 显存占用 |
-|------|---------|
-| Ministral-3-8B-Instruct-2512 (FP8, vLLM) | ~9 GB |
-| Qwen3-ASR-0.6B (vLLM, gpu_memory_utilization=0.3) | ~3-4 GB |
-| **合计** | **~13 GB** |
+| 模型 | 显存占用 | 端口 |
+|------|---------|------|
+| Ministral-3-8B-Instruct-2512 (FP8, vLLM) | ~9 GB | 8000 |
+| Qwen3-ASR-0.6B (vLLM, gpu=0.15) | ~2 GB | 8001 |
+| **合计** | **~11 GB** | — |
 
 ## 快速开始
 
@@ -51,14 +52,21 @@ ASR_MODEL_PATH = "/your/path/to/Qwen3-ASR-0.6B"
 pip install torch --index-url https://download.pytorch.org/whl/cu126
 # 再安装其余依赖
 pip install -r requirements.txt
-# 流式 ASR 需要额外安装 vLLM 后端
-pip install -U "qwen-asr[vllm]"
+# 文件模式 ASR 需要额外安装 transformers 后端
+pip install qwen-asr
 ```
 
-### 3. 启动 vLLM 服务
+**注意**：流式 ASR 使用 vLLM 0.19.x 原生 Transcriptions API，**无需安装 `qwen-asr[vllm]`**，避免版本冲突。
+
+### 3. 启动服务（两个终端）
 
 ```bash
+# 终端 1: LLM 服务
 python3 step1_setup_vllm.py
+# 或: vllm serve <LLM_MODEL_PATH> --port 8000 --tool-call-parser mistral
+
+# 终端 2: ASR 服务
+vllm serve <ASR_MODEL_PATH> --port 8001 --gpu-memory-utilization 0.15 --dtype auto
 ```
 
 ### 4. 运行助手
@@ -67,7 +75,7 @@ python3 step1_setup_vllm.py
 python3 step4_main.py                # 交互式选择模式
 python3 step4_main.py --mode text    # 纯文本模式
 python3 step4_main.py --mode voice   # 语音模式（transformers 后端 ASR）
-python3 step4_main.py --mode stream  # 流式 ASR 模式（vLLM 后端）
+python3 step4_main.py --mode stream  # 流式 ASR 模式（vLLM Transcriptions API）
 ```
 
 ## 交互模式说明
@@ -84,12 +92,12 @@ python3 step4_main.py --mode stream  # 流式 ASR 模式（vLLM 后端）
 
 ### 流式 ASR 模式 (`--mode stream`)
 
-- **按回车** → 录音（不保存文件，直接 numpy 数组）→ vLLM 流式 ASR → Agent
-- **`f assets/input/test.wav`** → 读取本地音频文件 → vLLM 流式 ASR → Agent
+- **按回车** → 录音（不保存文件，直接 numpy 数组）→ vLLM Transcriptions API → Agent
+- **`f assets/input/test.wav`** → 读取本地音频文件 → Transcriptions API → Agent
 - **输入文字** → 直接对话，跳过 ASR
 - **`q`** → 退出
 
-流式模式使用 Qwen3-ASR 的 vLLM 后端，通过 `init_streaming_state` → `streaming_transcribe` → `finish_streaming_transcribe` 实现增量识别，会实时打印当前识别进度。
+流式模式使用 vLLM 0.19.x 原生的 OpenAI 兼容 Transcriptions API，将 numpy 音频数组编码为 WAV 后发送到 ASR 服务。
 
 ## 🔧 如何添加自定义工具
 
@@ -104,7 +112,7 @@ from langchain_core.tools import tool
 
 @tool
 def my_new_tool(param1: str, param2: int) -> str:
-    \"\"\"工具描述（LLM 会根据这个决定是否调用）\"\"\"
+    """工具描述（LLM 会根据这个决定是否调用）"""
     # 你的实现逻辑
     return f"结果: {param1} {param2}"
 ```
@@ -138,9 +146,9 @@ LLM 会根据用户输入自动判断是否调用新工具。
 
 ## 关键设计决策
 
-1. **ASR 作为独立前置模块**（不编入 LangChain）：语音识别是确定性流程，不需要 LLM 决策，独立可替换
-2. **ASR 双后端设计**：transformers 后端用于文件模式，vLLM 后端用于流式模式，互不干扰
-3. **vLLM 服务化部署**：通过 OpenAI 兼容接口暴露 LLM，LangChain 用 `ChatOpenAI` 对接
+1. **双 vLLM 服务架构**：LLM（port 8000）和 ASR（port 8001）各自独立 vLLM 实例，避免版本冲突
+2. **ASR 使用 vLLM 原生支持**：vLLM 0.19.x 原生支持 Qwen3-ASR 的 Transcriptions API，无需 `qwen-asr[vllm]` 包
+3. **ASR 双后端设计**：transformers 后端用于文件模式（进程内加载），vLLM API 后端用于流式模式（HTTP 调用）
 4. **config.py 统一配置**：所有路径和参数集中管理，方便适配不同环境
 
 ## 实验推进历程
@@ -151,17 +159,20 @@ LLM 会根据用户输入自动判断是否调用新工具。
 - **方案**: vLLM 服务化部署 LLM，ASR 独立模块，LangChain Agent 带 tool calling
 - **结果**: 完成四步代码框架，支持语音/文本两种交互模式
 - **待验证**: 需填写实际模型路径后端到端测试
-- **下一步**: 接入真实模型路径，验证 vLLM tool calling 兼容性
 
 ### Round 2: 流式 ASR 模式
 
 - **动机**: 原有语音模式需要保存 WAV 文件再识别，流程较重；希望支持流式推理和直接上传音频文件
-- **方案**: 为 ASRModule 新增 vLLM 后端（`Qwen3ASRModel.LLM()`），通过 `init_streaming_state` + `streaming_transcribe` 实现流式识别；录音直接返回 numpy 数组，不保存文件
-- **关键参数**: Qwen3-ASR-0.6B, `gpu_memory_utilization=0.3`, `chunk_size_sec=2.0`
-- **新增功能**:
-  - `--mode stream` 流式交互模式
-  - `f <路径>` 上传本地音频文件识别
-  - 手动录音（不保存文件）
-  - 流式增量输出识别进度
-- **显存**: LLM (~9GB) + ASR vLLM (~3-4GB) ≈ 13GB，H200 绰绰有余
-- **下一步**: 端到端测试，后续可加入 VAD 自动检测实现全自动监听模式
+- **方案**: 为 ASRModule 新增 vLLM 后端（`Qwen3ASRModel.LLM()`），通过流式 API 实现增量识别
+- **问题**: `qwen-asr[vllm]` 依赖 vLLM 0.14.0，与已安装的 vLLM 0.19.1 冲突（GitHub Issue #119）
+- **结果**: 代码已编写但无法运行
+
+### Round 3: 双 vLLM 服务架构（当前）
+
+- **动机**: 解决 `qwen-asr[vllm]` 与 vLLM 0.19.1 的版本冲突
+- **方案**: 利用 vLLM 0.19.x 原生 Qwen3-ASR 支持，在独立端口（8001）启动 ASR 服务，通过 OpenAI 兼容 Transcriptions API 识别音频
+- **关键变化**:
+  - ASR 从 `qwen-asr` Python API 改为 vLLM Transcriptions API（HTTP）
+  - 无需 `qwen-asr[vllm]`，两个模型共享 vLLM 0.19.1
+  - 显存从 ~13GB 降到 ~11GB（ASR gpu=0.15 即可）
+- **下一步**: 端到端测试，验证 Transcriptions API 识别效果
