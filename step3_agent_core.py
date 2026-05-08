@@ -1,6 +1,6 @@
 """Step 3: LangChain Agent 核心 — Ministral-3-8B + Tool Calling
 
-提供 VoiceAssistant 类，封装 LLM Agent 的创建和调用。
+使用 langgraph 的 create_react_agent 构建 Agent（兼容 langchain 1.x）。
 
 用法:
     from step3_agent_core import VoiceAssistant
@@ -66,10 +66,8 @@ from datetime import datetime
 
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor
-from langchain.agents.tool_calling_agent import create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.prebuilt import create_react_agent
 
 import config
 
@@ -85,8 +83,6 @@ def get_weather(city: str) -> str:
     参数:
         city: 城市名称，如"北京"、"上海"、"New York"
     """
-    # TODO: 接入真实天气 API，如和风天气、OpenWeatherMap 等
-    # 示例：使用 wttr.in 免费 API
     try:
         url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
         req = urllib.request.Request(url, headers={"User-Agent": "curl/7.68.0"})
@@ -112,7 +108,6 @@ def calculator(expression: str) -> str:
         expression: 数学表达式，如 "2+3*4"、"sqrt(144)"、"3.14*5**2"
     支持: 基本运算(+,-,*,/,**)、math 库函数(sqrt, sin, cos, log 等)
     """
-    # 安全计算：只允许数学表达式，禁止任意代码执行
     allowed_names = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
     allowed_names["abs"] = abs
     allowed_names["round"] = round
@@ -136,7 +131,6 @@ def web_search(query: str) -> str:
     参数:
         query: 搜索关键词
     """
-    # TODO: 接入搜索引擎 API，如 Google Custom Search、Bing Search、SearXNG 等
     return f"[web_search] 搜索功能待接入，查询: {query}"
 
 
@@ -160,9 +154,10 @@ class VoiceAssistant:
     """语音助手 Agent 核心类
 
     封装 Ministral-3-8B LLM + Tool Calling + 多轮对话。
+    使用 langgraph 的 create_react_agent 构建。
 
     初始化参数:
-        vllm_base_url: vLLM 服务地址，默认 http://localhost:8000/v1
+        vllm_base_url: vLLM 服务地址，默认 http://localhost:<port>/v1
         model_name: 模型名称，默认 config 中路径的 basename
         tools: 工具列表，默认使用 TOOLS
         system_prompt: 系统提示词，默认从 config 读取
@@ -184,41 +179,26 @@ class VoiceAssistant:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        # 与 step1_setup_vllm.py 的 --served-model-name 保持一致
         model_name = model_name or os.path.basename(config.LLM_MODEL_PATH.rstrip(os.sep))
 
         # LLM：通过 OpenAI 兼容接口连接 vLLM
         self.llm = ChatOpenAI(
             base_url=vllm_base_url,
-            api_key="not-needed",  # 本地服务不需要 key
+            api_key="not-needed",
             model=model_name,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
 
-        # 绑定工具到 LLM
-        self.llm_with_tools = self.llm.bind_tools(self.tools)
+        # 使用 langgraph create_react_agent 构建 Agent
+        self.agent = create_react_agent(
+            self.llm,
+            self.tools,
+            prompt=self.system_prompt,
+        )
 
         # 对话历史
         self.chat_history: list = []
-
-        # 构建提示词模板
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", self.system_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-
-        # 构建 Agent
-        agent = create_tool_calling_agent(self.llm, self.tools, self.prompt)
-        self.agent_executor = AgentExecutor(
-            agent=agent,
-            tools=self.tools,
-            verbose=True,
-            max_iterations=10,
-            handle_parsing_errors=True,
-        )
 
     def chat(self, user_input: str) -> str:
         """处理用户输入，返回回复文本
@@ -229,16 +209,24 @@ class VoiceAssistant:
         返回:
             助手回复的文本
         """
-        response = self.agent_executor.invoke({
-            "input": user_input,
-            "chat_history": self.chat_history,
-        })
+        # 构建消息列表：历史 + 当前输入
+        messages = list(self.chat_history) + [HumanMessage(content=user_input)]
 
-        # 更新对话历史
+        response = self.agent.invoke({"messages": messages})
+
+        # 从响应中提取最后的 AI 消息
+        response_messages = response.get("messages", [])
+        ai_reply = ""
+        for msg in reversed(response_messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                ai_reply = msg.content
+                break
+
+        # 更新对话历史（只保留用户输入和最终回复）
         self.chat_history.append(HumanMessage(content=user_input))
-        self.chat_history.append(AIMessage(content=response["output"]))
+        self.chat_history.append(AIMessage(content=ai_reply))
 
-        return response["output"]
+        return ai_reply
 
     def reset(self):
         """重置对话历史"""
@@ -258,15 +246,13 @@ def create_assistant(**kwargs) -> VoiceAssistant:
 
 
 if __name__ == "__main__":
-    # 简单测试：直接文本对话（需要 vLLM 服务已启动）
-    print("="*50)
+    print("=" * 50)
     print("LangChain Agent 测试模式")
     print("确保 vLLM 服务已启动: python3 step1_setup_vllm.py")
-    print("="*50)
+    print("=" * 50)
 
     assistant = create_assistant()
 
-    # 测试 tool calling
     test_cases = [
         "北京今天天气怎么样？",
         "帮我算 (123 + 456) * 2",
