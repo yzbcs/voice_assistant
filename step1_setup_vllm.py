@@ -20,9 +20,14 @@ import argparse
 import config
 
 
+def _connect_host(host: str) -> str:
+    """服务绑定 0.0.0.0 时，客户端健康检查应连接 localhost。"""
+    return "localhost" if host == "0.0.0.0" else host
+
+
 def check_vllm_health(host: str = config.VLLM_HOST, port: int = config.VLLM_PORT, timeout: int = 5) -> bool:
     """检查 vLLM 服务是否就绪"""
-    url = f"http://{host}:{port}/v1/models"
+    url = f"http://{_connect_host(host)}:{port}/v1/models"
     try:
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -34,11 +39,21 @@ def check_vllm_health(host: str = config.VLLM_HOST, port: int = config.VLLM_PORT
         return False
 
 
-def wait_for_vllm(host: str = config.VLLM_HOST, port: int = config.VLLM_PORT, max_wait: int = 300) -> bool:
+def wait_for_vllm(host: str = config.VLLM_HOST, port: int = config.VLLM_PORT,
+                  max_wait: int = 300, proc: subprocess.Popen | None = None,
+                  log_path: str | None = None) -> bool:
     """等待 vLLM 服务启动就绪，最多等 max_wait 秒"""
     print(f"[vLLM] 等待服务启动 (最多 {max_wait}s) ...")
     start = time.time()
     while time.time() - start < max_wait:
+        if proc is not None and proc.poll() is not None:
+            print(f"[vLLM] 服务进程已退出，exit code: {proc.returncode}")
+            if log_path and os.path.exists(log_path):
+                print(f"[vLLM] 日志尾部 ({log_path}):")
+                with open(log_path, "r", errors="replace") as f:
+                    lines = f.readlines()[-80:]
+                print("".join(lines).rstrip())
+            return False
         if check_vllm_health(host, port):
             print(f"[vLLM] 服务就绪！耗时 {time.time() - start:.1f}s")
             return True
@@ -87,7 +102,7 @@ def start_vllm_server():
 
     try:
         # 等待服务就绪
-        if wait_for_vllm():
+        if wait_for_vllm(proc=proc, log_path=log_path):
             print("[vLLM] 服务已启动，可以开始使用")
             print_asr_start_command()
         proc.wait()
