@@ -10,9 +10,10 @@ ASR_MODEL_PATH = "/path/to/Qwen3-ASR"                        # TODO: 填写实�
 # vLLM 服务配置
 # ============================================================
 VLLM_HOST = "0.0.0.0"
-VLLM_PORT = 8000
-VLLM_GPU_MEMORY_UTILIZATION = 0.85  
-VLLM_MAX_MODEL_LEN = 8192           
+VLLM_PORT = 8010
+VLLM_GPU_MEMORY_UTILIZATION = 0.85
+VLLM_MAX_MODEL_LEN = 8192
+VLLM_SERVED_MODEL_NAME = ""  # 留空则使用 os.path.basename(LLM_MODEL_PATH)
 
 # ============================================================
 # ASR 配置
@@ -35,6 +36,7 @@ SYSTEM_PROMPT = (
 ASR_VLLM_HOST = "0.0.0.0"
 ASR_VLLM_PORT = 8001
 ASR_VLLM_GPU_MEMORY_UTILIZATION = 0.15  # 0.6B 模型足够
+ASR_SERVED_MODEL_NAME = ""  # ASR 服务注册的模型名，启动后 curl 查看，如 "./model/Qwen3-ASR-0.6B"
 
 # ============================================================
 # 流式 ASR 配置

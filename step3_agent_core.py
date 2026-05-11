@@ -179,7 +179,7 @@ class VoiceAssistant:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        model_name = model_name or os.path.basename(config.LLM_MODEL_PATH.rstrip(os.sep))
+        model_name = model_name or getattr(config, "VLLM_SERVED_MODEL_NAME", None) or os.path.basename(config.LLM_MODEL_PATH.rstrip(os.sep))
 
         # LLM：通过 OpenAI 兼容接口连接 vLLM
         self.llm = ChatOpenAI(

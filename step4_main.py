@@ -19,6 +19,8 @@
 
 import argparse
 import os
+import queue
+import threading
 import time
 import wave
 
@@ -127,6 +129,71 @@ def record_audio_array(duration: int = 0, sample_rate: int = config.RECORD_SAMPL
 
     print(f"[录音] 录制完成，长度: {len(audio_data) / sample_rate:.1f}s")
     return audio_data
+
+
+def record_and_transcribe_stream(asr: ASRModule, sample_rate: int = config.STREAM_SAMPLE_RATE,
+                                 channels: int = config.RECORD_CHANNELS) -> str:
+    """实时录音并按 ASR_CHUNK_SIZE_SEC 分块发送到 ASR API。"""
+    import sounddevice as sd
+
+    chunk_samples = max(1, int(config.ASR_CHUNK_SIZE_SEC * sample_rate))
+    audio_queue: queue.Queue[np.ndarray | None] = queue.Queue()
+    texts: list[str] = []
+    errors: list[str] = []
+    pending_audio = np.array([], dtype=np.int16)
+    pending_lock = threading.Lock()
+    worker_failed = threading.Event()
+
+    def enqueue_ready_chunks():
+        nonlocal pending_audio
+        while len(pending_audio) >= chunk_samples:
+            chunk = pending_audio[:chunk_samples].copy()
+            pending_audio = pending_audio[chunk_samples:]
+            audio_queue.put(chunk)
+
+    def callback(indata, frames, time_info, status):
+        nonlocal pending_audio
+        if worker_failed.is_set():
+            return
+        if status:
+            print(f"[录音] WARNING: {status}")
+        audio_data = indata[:, 0] if indata.ndim > 1 else indata
+        audio_data = audio_data.astype(np.int16, copy=False)
+        with pending_lock:
+            pending_audio = np.concatenate((pending_audio, audio_data.copy()))
+            enqueue_ready_chunks()
+
+    def worker():
+        while True:
+            chunk = audio_queue.get()
+            if chunk is None:
+                break
+            text = asr.transcribe_audio_chunk(chunk, sample_rate=sample_rate)
+            if text.startswith("[ERROR]"):
+                errors.append(text)
+                worker_failed.set()
+                break
+            if text:
+                texts.append(text)
+
+    print(f"[录音] 按回车停止录音；将按 {config.ASR_CHUNK_SIZE_SEC:.1f}s 分块发送")
+    worker_thread = threading.Thread(target=worker, daemon=True)
+    worker_thread.start()
+
+    with sd.InputStream(samplerate=sample_rate, channels=channels, dtype="int16", callback=callback):
+        input()
+
+    with pending_lock:
+        if len(pending_audio) > 0:
+            audio_queue.put(pending_audio.copy())
+            pending_audio = np.array([], dtype=np.int16)
+
+    audio_queue.put(None)
+    worker_thread.join()
+
+    if errors:
+        return errors[0]
+    return " ".join(texts).strip()
 
 
 # ============================================================
@@ -246,11 +313,8 @@ def run_streaming_mode(assistant: VoiceAssistant, asr: ASRModule):
         cmd = input("[You] ").strip()
         if not cmd:
             # 空回车 → 录音
-            audio_data = record_audio_array(
-                duration=config.RECORD_DURATION if config.RECORD_DURATION > 0 else 0
-            )
-            if audio_data is None:
-                continue
+            print("[ASR] 流式识别中...")
+            text = record_and_transcribe_stream(asr)
         elif cmd.lower() == "q":
             print("[助手] 再见！")
             break
@@ -260,6 +324,8 @@ def run_streaming_mode(assistant: VoiceAssistant, asr: ASRModule):
             audio_data = load_audio_file(file_path)
             if audio_data is None:
                 continue
+            print(f"[ASR] 按 {config.ASR_CHUNK_SIZE_SEC:.1f}s 分块识别中...")
+            text = asr.transcribe_audio_stream(audio_data, sample_rate=config.STREAM_SAMPLE_RATE)
         else:
             # 直接文字对话
             try:
@@ -269,9 +335,6 @@ def run_streaming_mode(assistant: VoiceAssistant, asr: ASRModule):
                 print(f"[ERROR] Agent 调用失败: {e}\n")
             continue
 
-        # 流式 ASR 识别
-        print("[ASR] 流式识别中...")
-        text = asr.transcribe_audio_array(audio_data, sample_rate=config.STREAM_SAMPLE_RATE)
         print(f"[ASR] 识别结果: {text}")
         if not text or text.startswith("[ERROR]"):
             print(f"[助手] 识别失败: {text}")
