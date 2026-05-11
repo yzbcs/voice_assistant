@@ -13,5 +13,7 @@ transformers>=4.46
 accelerate
 numpy
 sounddevice
+soundfile
 scipy
 modelscope
+omnivoice

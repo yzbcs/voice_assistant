@@ -1,169 +1,66 @@
-"""Step 3: LangChain Agent 核心 — Ministral-3-8B + Tool Calling
-
-使用 langgraph 的 create_react_agent 构建 Agent（兼容 langchain 1.x）。
-
-用法:
-    from step3_agent_core import VoiceAssistant
-
-    assistant = VoiceAssistant()                    # 初始化
-    response = assistant.chat("北京今天天气怎么样？")  # 单轮对话
-    response = assistant.chat("帮我算 123*456")       # 带 tool calling
-    assistant.reset()                                # 重置对话历史
-
-============================================================
-🔧 如何添加自定义工具
-============================================================
-
-添加新工具只需三步：
-
-1. 用 @tool 装饰器定义工具函数：
-
-   from langchain_core.tools import tool
-
-   @tool
-   def my_new_tool(param1: str, param2: int) -> str:
-       \"\"\"工具描述（LLM 会根据这个决定是否调用）\"\"\"
-       # 你的实现逻辑
-       return f"结果: {param1} {param2}"
-
-2. 将工具函数加到 TOOLS 列表：
-
-   TOOLS = [get_weather, calculator, get_current_time, my_new_tool]
-
-3. 重启 VoiceAssistant 即可。LLM 会根据用户输入自动选择工具。
-
-============================================================
-📝 工具编写注意事项
-============================================================
-
-- 函数签名必须有完整的类型注解（LLM 需要知道参数类型）
-- docstring 是 LLM 判断是否调用该工具的唯一依据，务必写清楚
-- 返回值统一为 str 类型
-- 如果工具需要调用外部 API，建议在函数内处理异常并返回错误信息
-- 工具之间不要有依赖关系，保持独立可测
-
-============================================================
-🔌 工具接口规范
-============================================================
-
-每个工具函数需满足：
-  - 被 @tool 装饰
-  - 有完整的参数类型注解
-  - 有清晰的 docstring（说明功能、参数含义）
-  - 返回 str 类型
-  - 自行处理异常，不向上抛出
-"""
+"""Step 3: LangChain Agent 核心 — Ministral 工具调用 + OmniVoice TTS."""
 
 from __future__ import annotations
 
 import json
-import math
 import os
-import urllib.parse
-import urllib.request
-import urllib.error
-from datetime import datetime
+from typing import Any
 
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 
 import config
+from step5_tts_module import OmniVoiceTTS
 
 
-# ============================================================
-# 🛠️ 工具定义区 — 在此处添加自定义工具
-# ============================================================
+_TTS: OmniVoiceTTS | None = None
+
+
+def _get_tts() -> OmniVoiceTTS:
+    global _TTS
+    if _TTS is None:
+        _TTS = OmniVoiceTTS()
+    return _TTS
+
 
 @tool
-def get_weather(city: str) -> str:
-    """查询指定城市的天气信息
+def synthesize_voice_reply(reply_text: str, gender: str, pitch: str, style: str = "") -> str:
+    """合成语音回复并返回 JSON。
 
     参数:
-        city: 城市名称，如"北京"、"上海"、"New York"
+        reply_text: 要对用户说的中文回复文本，必须简洁自然。
+        gender: 声音性别，只能是 "male" 或 "female"。
+        pitch: 音高，只能是 "low pitch"、"medium pitch" 或 "high pitch"。
+        style: 声音风格，只能是 "" 或 "whisper"。
     """
     try:
-        url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1"
-        req = urllib.request.Request(url, headers={"User-Agent": "curl/7.68.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        current = data["current_condition"][0]
-        return (
-            f"{city} 当前天气: {current['weatherDesc'][0]['value']}, "
-            f"温度 {current['temp_C']}°C, "
-            f"体感温度 {current['FeelsLikeC']}°C, "
-            f"湿度 {current['humidity']}%, "
-            f"风速 {current['windspeedKmph']}km/h"
+        result = _get_tts().generate(
+            text=reply_text,
+            gender=gender,
+            pitch=pitch,
+            style=style,
+            speed=config.TTS_DEFAULT_SPEED,
         )
-    except Exception as e:
-        return f"[天气查询失败] {city}: {e}"
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps(
+            {
+                "reply_text": reply_text,
+                "instruct": "",
+                "audio_path": "",
+                "error": f"TTS synthesis failed: {exc}",
+            },
+            ensure_ascii=False,
+        )
 
 
-@tool
-def calculator(expression: str) -> str:
-    """计算数学表达式
+TOOLS = [synthesize_voice_reply]
 
-    参数:
-        expression: 数学表达式，如 "2+3*4"、"sqrt(144)"、"3.14*5**2"
-    支持: 基本运算(+,-,*,/,**)、math 库函数(sqrt, sin, cos, log 等)
-    """
-    allowed_names = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
-    allowed_names["abs"] = abs
-    allowed_names["round"] = round
-    try:
-        result = eval(expression, {"__builtins__": {}}, allowed_names)
-        return str(result)
-    except Exception as e:
-        return f"[计算错误] {e}"
-
-
-@tool
-def get_current_time() -> str:
-    """获取当前日期和时间"""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-@tool
-def web_search(query: str) -> str:
-    """简单网络搜索（预留接口，需接入搜索引擎 API）
-
-    参数:
-        query: 搜索关键词
-    """
-    return f"[web_search] 搜索功能待接入，查询: {query}"
-
-
-# ============================================================
-# 📋 已注册工具列表 — 在此处注册新工具
-# ============================================================
-
-TOOLS = [
-    get_weather,
-    calculator,
-    get_current_time,
-    web_search,
-]
-
-
-# ============================================================
-# 🤖 VoiceAssistant 类
-# ============================================================
 
 class VoiceAssistant:
-    """语音助手 Agent 核心类
-
-    封装 Ministral-3-8B LLM + Tool Calling + 多轮对话。
-    使用 langgraph 的 create_react_agent 构建。
-
-    初始化参数:
-        vllm_base_url: vLLM 服务地址，默认 http://localhost:<port>/v1
-        model_name: 模型名称，默认 config 中路径的 basename
-        tools: 工具列表，默认使用 TOOLS
-        system_prompt: 系统提示词，默认从 config 读取
-        temperature: 生成温度
-        max_tokens: 最大生成 token 数
-    """
+    """Ministral agent that must route replies through the OmniVoice TTS tool."""
 
     def __init__(
         self,
@@ -179,9 +76,12 @@ class VoiceAssistant:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        model_name = model_name or getattr(config, "VLLM_SERVED_MODEL_NAME", None) or os.path.basename(config.LLM_MODEL_PATH.rstrip(os.sep))
+        model_name = (
+            model_name
+            or getattr(config, "VLLM_SERVED_MODEL_NAME", None)
+            or os.path.basename(config.LLM_MODEL_PATH.rstrip(os.sep))
+        )
 
-        # LLM：通过 OpenAI 兼容接口连接 vLLM
         self.llm = ChatOpenAI(
             base_url=vllm_base_url,
             api_key="not-needed",
@@ -189,80 +89,97 @@ class VoiceAssistant:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-
-        # 使用 langgraph create_react_agent 构建 Agent
-        self.agent = create_react_agent(
-            self.llm,
-            self.tools,
-            prompt=self.system_prompt,
-        )
-
-        # 对话历史
+        self.agent = create_react_agent(self.llm, self.tools, prompt=self.system_prompt)
         self.chat_history: list = []
 
-    def chat(self, user_input: str) -> str:
-        """处理用户输入，返回回复文本
+    @staticmethod
+    def _extract_tts_payload(response_messages: list[Any]) -> dict[str, Any] | None:
+        for msg in reversed(response_messages):
+            if isinstance(msg, ToolMessage):
+                try:
+                    payload = json.loads(str(msg.content))
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and (
+                    payload.get("audio_path") is not None or payload.get("reply_text") is not None
+                ):
+                    return payload
+        return None
 
-        参数:
-            user_input: 用户输入的文本（可以来自 ASR 或直接键入）
-
-        返回:
-            助手回复的文本
-        """
-        # 构建消息列表：历史 + 当前输入
-        messages = list(self.chat_history) + [HumanMessage(content=user_input)]
-
-        response = self.agent.invoke({"messages": messages})
-
-        # 从响应中提取最后的 AI 消息
-        response_messages = response.get("messages", [])
-        ai_reply = ""
+    @staticmethod
+    def _extract_last_ai_reply(response_messages: list[Any]) -> str:
         for msg in reversed(response_messages):
             if isinstance(msg, AIMessage) and msg.content:
-                ai_reply = msg.content
-                break
+                return str(msg.content)
+        return ""
 
-        # 更新对话历史（只保留用户输入和最终回复）
+    def chat_with_tts(self, user_input: str) -> dict[str, Any]:
+        """处理用户输入，返回文本、OmniVoice instruct、音频路径和原始 agent 回复。"""
+        messages = list(self.chat_history) + [HumanMessage(content=user_input)]
+        response = self.agent.invoke({"messages": messages})
+        response_messages = response.get("messages", [])
+
+        raw_agent_reply = self._extract_last_ai_reply(response_messages)
+        payload = self._extract_tts_payload(response_messages)
+
+        if payload is None:
+            fallback_text = raw_agent_reply or "好的。"
+            payload = _get_tts().generate(
+                text=fallback_text,
+                gender=config.TTS_DEFAULT_GENDER,
+                pitch=config.TTS_DEFAULT_PITCH,
+                style="",
+                speed=config.TTS_DEFAULT_SPEED,
+            )
+
+        reply_text = str(payload.get("reply_text") or raw_agent_reply or "")
+        result = {
+            "reply_text": reply_text,
+            "audio_path": str(payload.get("audio_path") or ""),
+            "instruct": str(payload.get("instruct") or ""),
+            "raw_agent_reply": raw_agent_reply,
+        }
+        if payload.get("error"):
+            result["error"] = str(payload["error"])
+
         self.chat_history.append(HumanMessage(content=user_input))
-        self.chat_history.append(AIMessage(content=ai_reply))
+        self.chat_history.append(AIMessage(content=reply_text))
+        return result
 
-        return ai_reply
+    def chat(self, user_input: str) -> str:
+        """兼容旧文本调用：返回 TTS 工具选择出的回复文本。"""
+        return self.chat_with_tts(user_input)["reply_text"]
 
     def reset(self):
-        """重置对话历史"""
+        """重置对话历史。"""
         self.chat_history = []
 
 
-# ============================================================
-# 便捷函数
-# ============================================================
-
 def create_assistant(**kwargs) -> VoiceAssistant:
-    """创建 VoiceAssistant 实例的便捷函数
-
-    参数会透传给 VoiceAssistant.__init__()
-    """
+    """创建 VoiceAssistant 实例的便捷函数。"""
     return VoiceAssistant(**kwargs)
 
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("LangChain Agent 测试模式")
+    print("LangChain Agent + OmniVoice TTS 测试模式")
     print("确保 vLLM 服务已启动: python3 step1_setup_vllm.py")
     print("=" * 50)
 
     assistant = create_assistant()
-
     test_cases = [
-        "北京今天天气怎么样？",
-        "帮我算 (123 + 456) * 2",
-        "现在几点了？",
+        "用女生高一点的声音鼓励我一句。",
+        "用男生低沉一点回复我：今天辛苦了",
     ]
 
     for query in test_cases:
         print(f"\n[User] {query}")
         try:
-            reply = assistant.chat(query)
-            print(f"[Assistant] {reply}")
-        except Exception as e:
-            print(f"[ERROR] {e}")
+            reply = assistant.chat_with_tts(query)
+            print(f"[Assistant] {reply['reply_text']}")
+            print(f"[TTS instruct] {reply['instruct']}")
+            print(f"[Audio] {reply['audio_path']}")
+            if reply.get("error"):
+                print(f"[ERROR] {reply['error']}")
+        except Exception as exc:
+            print(f"[ERROR] {exc}")

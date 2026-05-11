@@ -5,6 +5,7 @@
 # ============================================================
 LLM_MODEL_PATH = "/path/to/Ministral-3-8B-Instruct-2512"   # TODO: 填写实际路径
 ASR_MODEL_PATH = "/path/to/Qwen3-ASR"                        # TODO: 填写实际路径
+OMNIVOICE_MODEL_PATH = "/path/to/OmniVoice"                  # TODO: 填写实际路径，或使用 "k2-fsa/OmniVoice"
 
 # ============================================================
 # vLLM 服务配置
@@ -22,12 +23,27 @@ ASR_SAMPLE_RATE = 16000
 ASR_LANGUAGE = "zh"                  
 
 # ============================================================
+# OmniVoice TTS 配置
+# ============================================================
+OMNIVOICE_DEVICE = "cuda:0"          # Apple Silicon 可改为 "mps"，CPU 可改为 "cpu"
+OMNIVOICE_DTYPE = "float16"
+TTS_OUTPUT_DIR = "assets/output/tts"
+
+TTS_DEFAULT_GENDER = "female"
+TTS_DEFAULT_PITCH = "medium pitch"
+TTS_DEFAULT_SPEED = 1.0
+
+# ============================================================
 # Agent 配置
 # ============================================================
 SYSTEM_PROMPT = (
-    "你是一个智能语音助手，可以帮助用户查询天气、进行计算、搜索信息等。"
-    "请用简洁、自然的中文回复用户。"
-    "当用户问题需要调用工具时，请正确使用工具。"
+    "你是一个智能语音助手。你必须通过 synthesize_voice_reply 工具完成每一次回复，"
+    "不要直接把最终回答写在普通消息里。"
+    "先根据用户意图写出简洁、自然的中文 reply_text，再选择语音设计参数。"
+    "gender 只能是 male 或 female；pitch 只能是 low pitch、medium pitch 或 high pitch；"
+    "style 只能是空字符串或 whisper。"
+    "如果用户明确要求男声、女声、高音、低音、耳语等，请映射到对应字段；"
+    "否则使用默认、自然的声音。"
 )
 
 # ============================================================

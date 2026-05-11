@@ -36,6 +36,16 @@ from step3_agent_core import VoiceAssistant
 # ============================================================
 
 
+def print_tts_reply(result: dict) -> None:
+    """打印 Agent 文本回复和 OmniVoice 合成结果。"""
+    print(f"[助手] {result.get('reply_text', '')}")
+    print(f"[TTS instruct] {result.get('instruct', '')}")
+    print(f"[音频] {result.get('audio_path', '')}")
+    if result.get("error"):
+        print(f"[ERROR] {result['error']}")
+    print()
+
+
 def record_audio(duration: int = 0, sample_rate: int = config.RECORD_SAMPLE_RATE,
                  channels: int = config.RECORD_CHANNELS) -> str:
     """录制麦克风音频并保存为 WAV 文件
@@ -262,10 +272,10 @@ def run_voice_mode(assistant: VoiceAssistant, asr: ASRModule):
 
             user_input = text
 
-        # Agent 回复
+        # Agent 回复 + TTS 合成
         try:
-            reply = assistant.chat(user_input)
-            print(f"[助手] {reply}\n")
+            reply = assistant.chat_with_tts(user_input)
+            print_tts_reply(reply)
         except Exception as e:
             print(f"[ERROR] Agent 调用失败: {e}\n")
 
@@ -286,8 +296,8 @@ def run_text_mode(assistant: VoiceAssistant):
             break
 
         try:
-            reply = assistant.chat(user_input)
-            print(f"[助手] {reply}\n")
+            reply = assistant.chat_with_tts(user_input)
+            print_tts_reply(reply)
         except Exception as e:
             print(f"[ERROR] Agent 调用失败: {e}\n")
 
@@ -329,8 +339,8 @@ def run_streaming_mode(assistant: VoiceAssistant, asr: ASRModule):
         else:
             # 直接文字对话
             try:
-                reply = assistant.chat(cmd)
-                print(f"[助手] {reply}\n")
+                reply = assistant.chat_with_tts(cmd)
+                print_tts_reply(reply)
             except Exception as e:
                 print(f"[ERROR] Agent 调用失败: {e}\n")
             continue
@@ -340,10 +350,10 @@ def run_streaming_mode(assistant: VoiceAssistant, asr: ASRModule):
             print(f"[助手] 识别失败: {text}")
             continue
 
-        # Agent 回复
+        # Agent 回复 + TTS 合成
         try:
-            reply = assistant.chat(text)
-            print(f"[助手] {reply}\n")
+            reply = assistant.chat_with_tts(text)
+            print_tts_reply(reply)
         except Exception as e:
             print(f"[ERROR] Agent 调用失败: {e}\n")
 
