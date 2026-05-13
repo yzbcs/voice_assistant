@@ -1,4 +1,10 @@
-"""Step 3: LangChain Agent 核心 — Ministral 工具调用 + OmniVoice TTS."""
+"""Step 3: LangChain Agent 核心 — Ministral 工具调用 + OmniVoice TTS.
+
+设计:
+  工具 synthesize_voice_reply 只做"决策"（返回文本和语音参数），
+  不直接生成 wav。TTS 合成统一在 chat_with_tts 中执行一次，
+  避免 LLM 重复调用工具导致生成多个 wav 文件。
+"""
 
 from __future__ import annotations
 
@@ -14,7 +20,6 @@ from langgraph.prebuilt import create_react_agent
 import config
 from step5_tts_module import OmniVoiceTTS
 
-
 _TTS: OmniVoiceTTS | None = None
 
 
@@ -27,7 +32,7 @@ def _get_tts() -> OmniVoiceTTS:
 
 @tool
 def synthesize_voice_reply(reply_text: str, gender: str, pitch: str, style: str = "") -> str:
-    """合成语音回复并返回 JSON。
+    """选择语音回复的文本和声音参数。每次回复只能调用本工具一次。
 
     参数:
         reply_text: 要对用户说的中文回复文本，必须简洁自然。
@@ -35,32 +40,17 @@ def synthesize_voice_reply(reply_text: str, gender: str, pitch: str, style: str 
         pitch: 音高，只能是 "low pitch"、"medium pitch" 或 "high pitch"。
         style: 声音风格，只能是 "" 或 "whisper"。
     """
-    try:
-        result = _get_tts().generate(
-            text=reply_text,
-            gender=gender,
-            pitch=pitch,
-            style=style,
-            speed=config.TTS_DEFAULT_SPEED,
-        )
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as exc:
-        return json.dumps(
-            {
-                "reply_text": reply_text,
-                "instruct": "",
-                "audio_path": "",
-                "error": f"TTS synthesis failed: {exc}",
-            },
-            ensure_ascii=False,
-        )
+    return json.dumps(
+        {"reply_text": reply_text, "gender": gender, "pitch": pitch, "style": style},
+        ensure_ascii=False,
+    )
 
 
 TOOLS = [synthesize_voice_reply]
 
 
 class VoiceAssistant:
-    """Ministral agent that must route replies through the OmniVoice TTS tool."""
+    """Ministral agent that routes replies through synthesize_voice_reply, then generates TTS audio once."""
 
     def __init__(
         self,
@@ -93,16 +83,15 @@ class VoiceAssistant:
         self.chat_history: list = []
 
     @staticmethod
-    def _extract_tts_payload(response_messages: list[Any]) -> dict[str, Any] | None:
+    def _extract_last_tool_call(response_messages: list[Any]) -> dict[str, Any] | None:
+        """从 agent 响应中提取最后一次工具调用的参数（取最后一次，忽略中间重复调用）。"""
         for msg in reversed(response_messages):
             if isinstance(msg, ToolMessage):
                 try:
                     payload = json.loads(str(msg.content))
                 except json.JSONDecodeError:
                     continue
-                if isinstance(payload, dict) and (
-                    payload.get("audio_path") is not None or payload.get("reply_text") is not None
-                ):
+                if isinstance(payload, dict) and "reply_text" in payload:
                     return payload
         return None
 
@@ -114,17 +103,28 @@ class VoiceAssistant:
         return ""
 
     def chat_with_tts(self, user_input: str) -> dict[str, Any]:
-        """处理用户输入，返回文本、OmniVoice instruct、音频路径和原始 agent 回复。"""
+        """处理用户输入：LLM 决定回复内容和语音参数，然后统一生成一次 TTS 音频。"""
         messages = list(self.chat_history) + [HumanMessage(content=user_input)]
-        response = self.agent.invoke({"messages": messages})
+        response = self.agent.invoke(
+            {"messages": messages}, config={"recursion_limit": 6}
+        )
         response_messages = response.get("messages", [])
 
+        tool_params = self._extract_last_tool_call(response_messages)
         raw_agent_reply = self._extract_last_ai_reply(response_messages)
-        payload = self._extract_tts_payload(response_messages)
 
-        if payload is None:
+        # 根据 LLM 工具调用的参数生成 TTS；如果工具未被调用则 fallback
+        if tool_params:
+            tts_result = _get_tts().generate(
+                text=tool_params["reply_text"],
+                gender=tool_params.get("gender", config.TTS_DEFAULT_GENDER),
+                pitch=tool_params.get("pitch", config.TTS_DEFAULT_PITCH),
+                style=tool_params.get("style", ""),
+                speed=config.TTS_DEFAULT_SPEED,
+            )
+        else:
             fallback_text = raw_agent_reply or "好的。"
-            payload = _get_tts().generate(
+            tts_result = _get_tts().generate(
                 text=fallback_text,
                 gender=config.TTS_DEFAULT_GENDER,
                 pitch=config.TTS_DEFAULT_PITCH,
@@ -132,22 +132,22 @@ class VoiceAssistant:
                 speed=config.TTS_DEFAULT_SPEED,
             )
 
-        reply_text = str(payload.get("reply_text") or raw_agent_reply or "")
+        reply_text = str(tts_result.get("reply_text") or raw_agent_reply or "")
         result = {
             "reply_text": reply_text,
-            "audio_path": str(payload.get("audio_path") or ""),
-            "instruct": str(payload.get("instruct") or ""),
+            "audio_path": str(tts_result.get("audio_path") or ""),
+            "instruct": str(tts_result.get("instruct") or ""),
             "raw_agent_reply": raw_agent_reply,
         }
-        if payload.get("error"):
-            result["error"] = str(payload["error"])
+        if tts_result.get("error"):
+            result["error"] = str(tts_result["error"])
 
         self.chat_history.append(HumanMessage(content=user_input))
         self.chat_history.append(AIMessage(content=reply_text))
         return result
 
     def chat(self, user_input: str) -> str:
-        """兼容旧文本调用：返回 TTS 工具选择出的回复文本。"""
+        """兼容旧文本调用：返回回复文本。"""
         return self.chat_with_tts(user_input)["reply_text"]
 
     def reset(self):
