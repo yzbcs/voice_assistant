@@ -1,5 +1,9 @@
 # Install a CUDA-compatible torch build separately before this file.
 # Example: follow https://pytorch.org/get-started/locally/ for your CUDA/driver.
+#
+# Mega-ASR 仓库需单独 clone（不在 pip 中）:
+#   git clone https://github.com/xzf-thu/Mega-ASR.git
+#   路径填写到 config.py 的 MEGA_ASR_REPO_DIR
 
 qwen-asr
 vllm==0.19.1
@@ -8,6 +12,7 @@ mistral-common>=1.8.6
 langchain>=0.3
 langchain-openai>=0.3
 langchain-community>=0.3
+langgraph
 
 transformers>=4.46
 accelerate
@@ -16,4 +21,10 @@ sounddevice
 soundfile
 scipy
 modelscope
+prompt_toolkit
 omnivoice
+openai
+
+# Mega-ASR 额外依赖
+safetensors
+peft

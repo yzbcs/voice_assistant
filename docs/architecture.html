@@ -24,7 +24,20 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
 .pipeline-flow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pipeline-step { background: #12141f; border-radius: 6px; padding: 6px 12px; font-size: 12px; color: #ccc; }
 .pipeline-step.active { background: #1a2035; border: 1px solid #3d5a8a; color: #e0e0e0; }
+.pipeline-step.highlight { background: #2d5a3d; border: 1px solid #3d8a5a; color: #6ecf8e; }
 .pipeline-arr { color: #555; font-size: 14px; }
+
+/* Mega-ASR Router Diagram */
+.router-diagram { background: #1a1d2e; border: 1px solid #2d3154; border-radius: 12px; padding: 20px; margin-top: 16px; }
+.router-title { font-size: 14px; color: #6ecf8e; font-weight: 700; margin-bottom: 12px; }
+.router-flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center; }
+.router-box { background: #12141f; border: 1px solid #2d3154; border-radius: 8px; padding: 10px 16px; font-size: 12px; text-align: center; min-width: 120px; }
+.router-box.decision { border-color: #c9a0ff; color: #c9a0ff; }
+.router-box.base { border-color: #7eb8ff; color: #7eb8ff; }
+.router-box.lora { border-color: #6ecf8e; color: #6ecf8e; }
+.router-box.output { border-color: #f0c060; color: #f0c060; }
+.router-arr { color: #555; font-size: 14px; }
+.router-label { font-size: 10px; color: #888; margin-top: 4px; }
 
 /* File List */
 .file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
@@ -79,12 +92,18 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
 .tts-params th { text-align: left; color: #c9a0ff; font-size: 13px; padding: 8px 12px; border-bottom: 1px solid #2a2a3a; }
 .tts-params td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #1e2030; }
 .tts-params td:first-child { font-family: "SF Mono", monospace; color: #7eb8ff; }
+
+/* Mode Comparison */
+.mode-compare { width: 100%; border-collapse: collapse; margin-top: 16px; }
+.mode-compare th { text-align: left; color: #c9a0ff; font-size: 13px; padding: 8px 12px; border-bottom: 1px solid #2a2a3a; }
+.mode-compare td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #1e2030; }
+.mode-compare td:first-child { font-weight: 600; }
 </style>
 </head>
 <body>
 
 <h1>语音助手工作流</h1>
-<p class="subtitle">Ministral-3-8B-Instruct-2512 + Qwen3-ASR-0.6B + OmniVoice TTS + LangChain | H200 80GB GPU</p>
+<p class="subtitle">Ministral-3-8B-Instruct-2512 + Mega-ASR (Qwen3-ASR-1.7B + LoRA + 路由器) + OmniVoice TTS + LangChain</p>
 
 <!-- Architecture -->
 <div class="section">
@@ -104,15 +123,16 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
         <div class="pipeline-arr">→</div>
         <div class="pipeline-step">音频输出</div>
       </div>
+      <p style="color:#888; font-size:11px; margin-top:8px;">ASR 使用预合并 LoRA 的 vLLM checkpoint，无路由器</p>
     </div>
     <div class="pipeline">
-      <div class="pipeline-title mode-voice">voice 模式 (transformers ASR)</div>
+      <div class="pipeline-title mode-voice">voice 模式 (Mega-ASR transformers)</div>
       <div class="pipeline-flow">
         <div class="pipeline-step">麦克风录音</div>
         <div class="pipeline-arr">→</div>
         <div class="pipeline-step">保存 WAV</div>
         <div class="pipeline-arr">→</div>
-        <div class="pipeline-step">transformers transcribe</div>
+        <div class="pipeline-step highlight">Mega-ASR (LoRA 路由)</div>
         <div class="pipeline-arr">→</div>
         <div class="pipeline-step active">Agent</div>
         <div class="pipeline-arr">→</div>
@@ -120,6 +140,7 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
         <div class="pipeline-arr">→</div>
         <div class="pipeline-step">音频输出</div>
       </div>
+      <p style="color:#888; font-size:11px; margin-top:8px;">音频质量路由器动态判断是否挂载 LoRA</p>
     </div>
     <div class="pipeline">
       <div class="pipeline-title mode-text">text 模式</div>
@@ -134,21 +155,64 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
       </div>
     </div>
   </div>
+
+  <!-- Mega-ASR Router Diagram -->
+  <div class="router-diagram">
+    <div class="router-title">Mega-ASR 音频质量路由器 (voice 模式)</div>
+    <div class="router-flow">
+      <div class="router-box output">音频输入</div>
+      <div class="router-arr">→</div>
+      <div class="router-box decision">AudioQualityRouter<br><span style="font-size:10px">判断音频退化程度</span></div>
+      <div class="router-arr">→</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:11px; color:#6ecf8e;">质量达标</span>
+          <div class="router-arr">→</div>
+          <div class="router-box base">Qwen3-ASR-1.7B<br><span style="font-size:10px">直接推理</span></div>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="font-size:11px; color:#c9a0ff;">质量退化</span>
+          <div class="router-arr">→</div>
+          <div class="router-box lora">Qwen3-ASR-1.7B + LoRA<br><span style="font-size:10px">适配器推理</span></div>
+        </div>
+      </div>
+      <div class="router-arr">→</div>
+      <div class="router-box output">识别文本</div>
+    </div>
+    <p style="color:#888; font-size:11px; margin-top:12px;">阈值由 <code style="color:#c9a0ff;">MEGA_ASR_QUALITY_THRESHOLD</code> 控制（默认 0.5）</p>
+  </div>
+</div>
+
+<!-- Mode Comparison -->
+<div class="section">
+  <div class="section-title">三种模式对比</div>
+  <table class="mode-compare">
+    <thead>
+      <tr><th></th><th style="color:#6ecf8e;">Stream (推荐)</th><th style="color:#f0c060;">Voice</th><th style="color:#7eb8ff;">Text</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ASR 后端</td><td>vLLM API（预合并 LoRA）</td><td>MegaASR（LoRA 动态路由）</td><td>无</td></tr>
+      <tr><td>录音方式</td><td>边录边切分（每 2s）</td><td>录完整段再识别</td><td>不录音</td></tr>
+      <tr><td>路由器</td><td>不启用</td><td>启用</td><td>—</td></tr>
+      <tr><td>需要 vLLM ASR 服务</td><td>是</td><td>否</td><td>否</td></tr>
+      <tr><td>延迟</td><td>低（实时）</td><td>中（录完再识别）</td><td>无 ASR 延迟</td></tr>
+    </tbody>
+  </table>
 </div>
 
 <!-- GPU Memory -->
 <div class="section">
-  <div class="section-title">GPU 显存分配 (H200 80GB)</div>
+  <div class="section-title">GPU 显存分配</div>
   <div class="gpu-bar-container">
     <div class="gpu-bar">
       <div class="gpu-seg-llm">Ministral-3-8B ~9GB</div>
-      <div class="gpu-seg-asr">ASR-0.6B ~2GB</div>
+      <div class="gpu-seg-asr">Mega-ASR 1.7B ~4GB</div>
       <div class="gpu-seg-tts">OmniVoice TTS ~2GB</div>
-      <div class="gpu-seg-free">剩余 ~67GB</div>
+      <div class="gpu-seg-free">剩余 ~65GB</div>
     </div>
     <div class="gpu-legend">
       <span class="leg-llm">LLM (vLLM, gpu_memory_utilization=0.85)</span>
-      <span class="leg-asr">ASR (vLLM, gpu_memory_utilization=0.15)</span>
+      <span class="leg-asr">ASR (vLLM, gpu_memory_utilization=0.30)</span>
       <span class="leg-tts">TTS (in-process, 懒加载)</span>
       <span class="leg-free">空闲显存</span>
     </div>
@@ -161,19 +225,19 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
   <div class="file-grid">
     <div class="file-card">
       <div class="fname">config.py</div>
-      <div class="fdesc">模型路径、vLLM 参数、ASR 配置、TTS 默认参数、录音参数等统一配置</div>
+      <div class="fdesc">模型路径、vLLM 参数、Mega-ASR 配置（仓库路径、checkpoint、路由器阈值）、TTS 默认参数、录音参数</div>
     </div>
     <div class="file-card">
       <div class="fname">requirements.txt</div>
-      <div class="fdesc">Python 依赖清单（含 omnivoice、soundfile）</div>
+      <div class="fdesc">Python 依赖清单（含 omnivoice、soundfile、qwen-asr）</div>
     </div>
     <div class="file-card">
       <div class="fname">step1_setup_vllm.py</div>
-      <div class="fdesc">启动 vLLM 服务，加载 Ministral-3-8B-Instruct-2512，含健康检查</div>
+      <div class="fdesc">启动 vLLM 服务（Ministral-3-8B），打印 Mega-ASR ASR 启动说明</div>
     </div>
     <div class="file-card">
       <div class="fname">step2_asr_module.py</div>
-      <div class="fdesc">Qwen3-ASR-0.6B 语音识别模块，支持 transformers / vLLM 双后端</div>
+      <div class="fdesc">Mega-ASR 语音识别模块：transformers 后端（LoRA 动态路由）+ vLLM API 后端 + --materialize 合并命令</div>
     </div>
     <div class="file-card">
       <div class="fname">step3_agent_core.py</div>
@@ -253,14 +317,29 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
       <div class="config-hint">⚠️ 需填写实际路径</div>
     </div>
     <div class="config-item">
-      <div class="config-key">ASR_MODEL_PATH</div>
-      <div class="config-val">/path/to/Qwen3-ASR-0.6B</div>
-      <div class="config-hint">⚠️ 需填写实际路径</div>
+      <div class="config-key">MEGA_ASR_REPO_DIR</div>
+      <div class="config-val">/path/to/Mega-ASR</div>
+      <div class="config-hint">⚠️ Mega-ASR 仓库路径</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">MEGA_ASR_CKPT_DIR</div>
+      <div class="config-val">/path/to/Mega-ASR/ckpt/Mega-ASR</div>
+      <div class="config-hint">⚠️ Checkpoint 根目录（含 Qwen3-ASR-1.7B/、mega-asr-merged/、audio_quality_router/）</div>
     </div>
     <div class="config-item">
       <div class="config-key">OMNIVOICE_MODEL_PATH</div>
       <div class="config-val">/path/to/OmniVoice</div>
       <div class="config-hint">⚠️ 需填写实际路径</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">MEGA_ASR_ROUTING_ENABLED</div>
+      <div class="config-val">True</div>
+      <div class="config-hint">是否启用音频质量路由器（仅 transformers 模式生效）</div>
+    </div>
+    <div class="config-item">
+      <div class="config-key">MEGA_ASR_QUALITY_THRESHOLD</div>
+      <div class="config-val">0.5</div>
+      <div class="config-hint">路由器判定阈值，越高越倾向挂载 LoRA</div>
     </div>
     <div class="config-item">
       <div class="config-key">VLLM_PORT</div>
@@ -279,8 +358,8 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
     </div>
     <div class="config-item">
       <div class="config-key">ASR_VLLM_GPU_MEMORY_UTILIZATION</div>
-      <div class="config-val">0.15</div>
-      <div class="config-hint">ASR 显存比例（0.6B 模型足够）</div>
+      <div class="config-val">0.30</div>
+      <div class="config-hint">ASR 显存比例（1.7B 模型）</div>
     </div>
     <div class="config-item">
       <div class="config-key">OMNIVOICE_DEVICE / DTYPE</div>
@@ -308,7 +387,7 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
       <div class="step-num">1</div>
       <div class="step-content">
         <div class="step-title">配置模型路径</div>
-        <span class="step-code">编辑 config.py，填写 LLM_MODEL_PATH、ASR_MODEL_PATH、OMNIVOICE_MODEL_PATH</span>
+        <span class="step-code">编辑 config.py，填写 LLM_MODEL_PATH、MEGA_ASR_REPO_DIR、MEGA_ASR_CKPT_DIR、OMNIVOICE_MODEL_PATH</span>
       </div>
     </div>
     <div class="step">
@@ -324,7 +403,8 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
       <div class="step-content">
         <div class="step-title">启动 LLM + ASR 服务（两个终端）</div>
         <span class="step-code">终端 1: python3 step1_setup_vllm.py</span>
-        <span class="step-code">终端 2: vllm serve &lt;ASR_MODEL_PATH&gt; --port 8001 --gpu-memory-utilization 0.15 --dtype auto</span>
+        <span class="step-code">终端 2 (首次): python3 step2_asr_module.py --materialize</span>
+        <span class="step-code">终端 2: vllm serve &lt;CKPT&gt;/mega-asr-vllm-materialized --port 8001 --gpu-memory-utilization 0.30 --dtype auto</span>
       </div>
     </div>
     <div class="step">
@@ -335,7 +415,7 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
       </div>
     </div>
   </div>
-  <p style="color:#f0c060; font-size:12px; margin-top:12px;">⚠️ 不要安装 qwen-asr[vllm]，与 vLLM 0.19.1 冲突。流式 ASR 使用 vLLM 原生 Transcriptions API。</p>
+  <p style="color:#f0c060; font-size:12px; margin-top:12px;">⚠️ 不要安装 qwen-asr[vllm]，与 vLLM 0.19.1 冲突。vLLM 模式使用预合并 LoRA checkpoint。</p>
 </div>
 
 <!-- Experiment History -->
@@ -363,13 +443,21 @@ h1 { font-size: 28px; color: #7eb8ff; margin-bottom: 8px; }
         ASR 改用 HTTP Transcriptions API，无需 qwen-asr[vllm]
       </div>
     </div>
-    <div class="file-card" style="border-color: #3d5a3d;">
-      <div class="fname" style="color:#6ecf8e;">Round 4: OmniVoice TTS 集成 (当前)</div>
+    <div class="file-card">
+      <div class="fname" style="color:#888;">Round 4: OmniVoice TTS 集成</div>
       <div class="fdesc">
         新增 step5_tts_module.py（OmniVoice 懒加载）<br>
         Agent 注册 synthesize_voice_reply 工具<br>
-        System prompt 强制 LLM 每次回复走 TTS<br>
-        全链路: ASR 输入 → LLM 理解 → TTS 语音输出
+        System prompt 强制 LLM 每次回复走 TTS
+      </div>
+    </div>
+    <div class="file-card" style="border-color: #3d5a3d;">
+      <div class="fname" style="color:#6ecf8e;">Round 5: Mega-ASR 升级 (当前)</div>
+      <div class="fdesc">
+        Qwen3-ASR-0.6B → Mega-ASR (1.7B + LoRA + 路由器)<br>
+        transformers 模式启用 LoRA 动态路由<br>
+        vLLM 模式预合并 LoRA 避免依赖冲突<br>
+        基础模型从 0.6B → 1.7B，识别精度和鲁棒性提升
       </div>
     </div>
   </div>

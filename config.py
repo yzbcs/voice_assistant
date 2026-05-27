@@ -1,11 +1,23 @@
 """语音助手配置文件 — 模型路径和运行参数"""
 
+import os
+
 # ============================================================
 # 模型路径（请根据实际本地路径修改）
 # ============================================================
 LLM_MODEL_PATH = "/path/to/Ministral-3-8B-Instruct-2512"   # TODO: 填写实际路径
-ASR_MODEL_PATH = "/path/to/Qwen3-ASR"                        # TODO: 填写实际路径
 OMNIVOICE_MODEL_PATH = "/path/to/OmniVoice"                  # TODO: 填写实际路径，或使用 "k2-fsa/OmniVoice"
+
+# ============================================================
+# Mega-ASR 配置
+# ============================================================
+MEGA_ASR_REPO_DIR = "/path/to/Mega-ASR"                              # TODO: 填写 Mega-ASR 仓库实际路径
+MEGA_ASR_CKPT_DIR = "/path/to/Mega-ASR/ckpt/Mega-ASR"                # TODO: 填写 checkpoint 实际路径
+MEGA_ASR_ROUTING_ENABLED = True       # 是否启用音频质量路由器
+MEGA_ASR_QUALITY_THRESHOLD = 0.5      # 路由器判定阈值
+
+# ASR 基础模型路径（由 Mega-ASR checkpoint 自动解析）
+ASR_MODEL_PATH = os.path.join(MEGA_ASR_CKPT_DIR, "Qwen3-ASR-1.7B")
 
 # ============================================================
 # vLLM 服务配置
@@ -30,7 +42,7 @@ OMNIVOICE_DTYPE = "float16"
 TTS_OUTPUT_DIR = "assets/output/tts"
 
 TTS_DEFAULT_GENDER = "female"
-TTS_DEFAULT_PITCH = "medium pitch"
+TTS_DEFAULT_PITCH = "moderate pitch"
 TTS_DEFAULT_SPEED = 1.0
 
 # ============================================================
@@ -40,7 +52,7 @@ SYSTEM_PROMPT = (
     "你是一个智能语音助手。每次用户提问，你只能调用 synthesize_voice_reply 工具一次，"
     "绝对不要重复调用，不要直接把回复写在普通消息里。"
     "根据用户意图写出简洁、自然的中文 reply_text，再选择语音设计参数。"
-    "gender 只能是 male 或 female；pitch 只能是 low pitch、medium pitch 或 high pitch；"
+    "gender 只能是 male 或 female；pitch 只能是 low pitch、moderate pitch 或 high pitch；"
     "style 只能是空字符串或 whisper。"
     "如果用户明确要求男声、女声、高音、低音、耳语等，请映射到对应字段；"
     "否则使用默认、自然的声音。"
@@ -51,7 +63,7 @@ SYSTEM_PROMPT = (
 # ============================================================
 ASR_VLLM_HOST = "0.0.0.0"
 ASR_VLLM_PORT = 8001
-ASR_VLLM_GPU_MEMORY_UTILIZATION = 0.15  # 0.6B 模型足够
+ASR_VLLM_GPU_MEMORY_UTILIZATION = 0.30  # 1.7B 模型
 ASR_SERVED_MODEL_NAME = ""  # ASR 服务注册的模型名，启动后 curl 查看，如 "./model/Qwen3-ASR-0.6B"
 
 # ============================================================

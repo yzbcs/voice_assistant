@@ -2,16 +2,17 @@
 
 ## 项目概述
 
-基于 **Ministral-3-8B-Instruct-2512** + **Qwen3-ASR-0.6B** + **OmniVoice TTS** + **LangChain** 搭建的本地语音助手。支持录音识别 → LLM 对话 → 语音合成全链路，运行在 H200 GPU 上。
+基于 **Ministral-3-8B-Instruct-2512** + **Mega-ASR** (Qwen3-ASR-1.7B + LoRA + 音频质量路由器) + **OmniVoice TTS** + **LangChain** 搭建的本地语音助手。支持录音识别 → LLM 对话 → 语音合成全链路，运行在 GPU 服务器上。
 
 ## 架构
 
 ```
-终端 1: vllm serve Ministral-3-8B (port 由 config.VLLM_PORT 控制)  — LLM 服务
-终端 2: vllm serve Qwen3-ASR-0.6B (port 8001)                     — ASR 服务
+终端 1: vllm serve Ministral-3-8B (port 由 config.VLLM_PORT 控制)          — LLM 服务
+终端 2: vllm serve mega-asr-vllm-materialized (port 8001)                — ASR 服务（LoRA 已预合并）
 
 step4_main.py:
-  录音 / 音频文件 → vLLM Transcriptions API (port 8001) → 识别文本
+  录音 / 音频文件 → MegaASR (transformers, LoRA+路由器)  → 识别文本
+                  或 → vLLM Transcriptions API (port 8001) → 识别文本
                   → LangChain Agent (VLLM_PORT)
                   → synthesize_voice_reply 工具 → OmniVoice TTS（进程内）
                   → 音频文件 (assets/output/tts/)
@@ -21,22 +22,22 @@ step4_main.py:
 
 | 文件 | 说明 |
 |------|------|
-| `config.py` | 配置文件：模型路径、vLLM 参数、ASR 参数、TTS 参数、录音参数 |
+| `config.py` | 配置文件：模型路径、vLLM 参数、Mega-ASR 参数、TTS 参数、录音参数 |
 | `requirements.txt` | Python 依赖 |
 | `step1_setup_vllm.py` | 启动 LLM vLLM 服务（终端 1） |
-| `step2_asr_module.py` | ASR 模块：transformers 后端（文件模式）+ vLLM Transcriptions API（流式模式）|
+| `step2_asr_module.py` | Mega-ASR 模块：transformers 后端（LoRA 动态路由）+ vLLM Transcriptions API（流式模式）|
 | `step3_agent_core.py` | LangChain Agent 核心（LLM + synthesize_voice_reply 工具 + 多轮对话）|
 | `step4_main.py` | 主入口：录音 → ASR → Agent + TTS → 输出 |
 | `step5_tts_module.py` | OmniVoice TTS 模块（语音合成，懒加载）|
 
-## 显存占用预估（H200 80GB）
+## 显存占用预估
 
 | 模型 | 显存占用 | 端口 |
 |------|---------|------|
 | Ministral-3-8B-Instruct-2512 (FP8, vLLM) | ~9 GB | config.VLLM_PORT |
-| Qwen3-ASR-0.6B (vLLM, gpu=0.15) | ~2 GB | 8001 |
+| Mega-ASR / Qwen3-ASR-1.7B (vLLM, gpu=0.30) | ~4 GB | 8001 |
 | OmniVoice TTS (in-process, 懒加载) | ~2 GB | — |
-| **合计** | **~13 GB** | — |
+| **合计** | **~15 GB** | — |
 
 ## 快速开始
 
@@ -46,7 +47,8 @@ step4_main.py:
 
 ```python
 LLM_MODEL_PATH = "/your/path/to/Ministral-3-8B-Instruct-2512"
-ASR_MODEL_PATH = "/your/path/to/Qwen3-ASR-0.6B"
+MEGA_ASR_REPO_DIR = "/your/path/to/Mega-ASR"               # Mega-ASR 仓库路径
+MEGA_ASR_CKPT_DIR = "/your/path/to/Mega-ASR/ckpt/Mega-ASR"  # checkpoint 路径
 OMNIVOICE_MODEL_PATH = "/your/path/to/OmniVoice"
 ```
 
@@ -68,8 +70,9 @@ pip install -r requirements.txt
 python3 step1_setup_vllm.py
 # 或: vllm serve <LLM_MODEL_PATH> --port <VLLM_PORT> --tool-call-parser mistral
 
-# 终端 2: ASR 服务
-vllm serve <ASR_MODEL_PATH> --port 8001 --gpu-memory-utilization 0.15 --dtype auto
+# 终端 2: ASR 服务（先合并 LoRA，再启动）
+python3 step2_asr_module.py --materialize                    # 首次运行：合并 LoRA 权重（一次性）
+vllm serve <MEGA_ASR_CKPT_DIR>/mega-asr-vllm-materialized --port 8001 --gpu-memory-utilization 0.30 --dtype auto
 ```
 
 ### 4. 运行助手
@@ -77,7 +80,7 @@ vllm serve <ASR_MODEL_PATH> --port 8001 --gpu-memory-utilization 0.15 --dtype au
 ```bash
 python3 step4_main.py                # 交互式选择模式
 python3 step4_main.py --mode text    # 文本模式 + TTS 合成
-python3 step4_main.py --mode voice   # 语音模式（transformers 后端 ASR + TTS）
+python3 step4_main.py --mode voice   # 语音模式（Mega-ASR transformers 后端 + LoRA 路由 + TTS）
 python3 step4_main.py --mode stream  # 流式 ASR 模式 + TTS（推荐）
 ```
 
@@ -89,15 +92,31 @@ python3 step4_main.py --mode stream  # 流式 ASR 模式 + TTS（推荐）
 
 ### 语音模式 (`--mode voice`)
 
-- 输入 `r` → 录音（保存 WAV 文件）→ transformers 后端 ASR → Agent + TTS
+- 输入 `r` → 录音（保存 WAV 文件）→ Mega-ASR transformers 后端（LoRA 动态路由）→ Agent + TTS
 - 输入其他文字 → 直接对话 + TTS
+- **特点**：使用音频质量路由器自动判断是否挂载 LoRA 权重，对低质量音频鲁棒性更强
 
 ### 流式 ASR 模式 (`--mode stream`)
 
-- **按回车** → 录音 → vLLM Transcriptions API → Agent + TTS
+- **按回车** → 录音（边录边切分）→ vLLM Transcriptions API → Agent + TTS
 - **`f assets/input/test.wav`** → 读取本地音频文件 → Transcriptions API → Agent + TTS
 - **输入文字** → 直接对话 + TTS，跳过 ASR
 - **`q`** → 退出
+- **注意**：此模式使用预合并的 LoRA 权重，不启用音频质量路由器
+
+## Mega-ASR 架构
+
+```
+音频输入 → 音频质量路由器 (AudioQualityRouter)
+             ├─ 质量达标 → 基础模型 (Qwen3-ASR-1.7B) 直接推理
+             └─ 质量退化 → 基础模型 + LoRA 适配器推理
+         → 识别文本
+```
+
+- **基础模型**：Qwen3-ASR-1.7B（从 0.6B 升级）
+- **LoRA 适配器**：`mega-asr-merged/`，针对低质量音频场景微调
+- **音频质量路由器**：`audio_quality_router/`，判断音频是否退化并决定是否挂载 LoRA
+- **vLLM 模式**：预先将 LoRA 合并到基础权重（`mega-asr-vllm-materialized/`），不启用路由器
 
 ## TTS 语音参数
 
@@ -132,9 +151,9 @@ Agent 的 `synthesize_voice_reply` 工具接受以下参数：
 ## 关键设计决策
 
 1. **双 vLLM 服务架构**：LLM 和 ASR 各自独立 vLLM 实例，避免版本冲突
-2. **TTS 进程内懒加载**：OmniVoice 首次调用时加载，无需独立服务
-3. **强制 TTS 路由**：System prompt 要求 LLM 必须通过 `synthesize_voice_reply` 工具回复，保证每条回复都有语音输出
-4. **ASR 双后端设计**：transformers 后端用于文件模式（进程内加载），vLLM API 后端用于流式模式（HTTP 调用）
+2. **Mega-ASR 双后端设计**：transformers 后端支持 LoRA 动态路由（voice 模式），vLLM API 后端用于流式识别（stream 模式，需预合并 LoRA）
+3. **TTS 进程内懒加载**：OmniVoice 首次调用时加载，无需独立服务
+4. **强制 TTS 路由**：System prompt 要求 LLM 必须通过 `synthesize_voice_reply` 工具回复，保证每条回复都有语音输出
 5. **config.py 统一配置**：所有路径和参数集中管理，方便适配不同环境
 
 ## 实验推进历程
@@ -160,9 +179,20 @@ Agent 的 `synthesize_voice_reply` 工具接受以下参数：
 - **关键变化**: ASR 从 `qwen-asr` Python API 改为 vLLM Transcriptions API（HTTP）；无需 `qwen-asr[vllm]`
 - **结果**: 端到端测试通过
 
-### Round 4: OmniVoice TTS 集成（当前）
+### Round 4: OmniVoice TTS 集成
 
 - **动机**: 实现完整的语音对话闭环：ASR 输入 → LLM 理解 → TTS 语音输出
 - **方案**: 新增 `step5_tts_module.py`（OmniVoice 懒加载），`step3_agent_core.py` 注册 `synthesize_voice_reply` 工具，System prompt 强制 LLM 每次回复都走 TTS 工具
 - **关键变化**: 移除旧工具（weather/calculator 等），只保留 `synthesize_voice_reply`；`step4_main.py` 调用改为 `chat_with_tts`
-- **下一步**: 端到端测试全链路
+- **结果**: 端到端全链路测试通过
+
+### Round 5: Mega-ASR 升级（当前）
+
+- **动机**: Qwen3-ASR-0.6B 对噪声/低质量音频鲁棒性不足，升级到 Mega-ASR（1.7B 基础 + LoRA 适配 + 音频质量路由器）
+- **方案**: 用 Mega-ASR 的 `MegaASR` 类替换原有 `Qwen3ASRModel`；transformers 模式启用 LoRA 动态路由，vLLM 流式模式预合并 LoRA 权重
+- **关键变化**: `step2_asr_module.py` 重写（MegaASR 替换 Qwen3ASRModel）；`config.py` 新增 `MEGA_ASR_REPO_DIR`、`MEGA_ASR_CKPT_DIR`、路由器参数；`step1_setup_vllm.py` ASR 启动命令更新
+- **核心改进**:
+  - 基础模型从 0.6B → 1.7B，识别精度提升
+  - 新增音频质量路由器，自动判断音频退化程度并挂载 LoRA
+  - vLLM 模式通过预合并 LoRA 避免依赖冲突
+- **下一步**: 在服务器上填写实际路径后端到端测试

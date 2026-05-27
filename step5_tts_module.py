@@ -10,7 +10,7 @@ import config
 
 
 ALLOWED_GENDERS = {"male", "female"}
-ALLOWED_PITCHES = {"low pitch", "medium pitch", "high pitch"}
+ALLOWED_PITCHES = {"low pitch", "moderate pitch", "high pitch"}
 ALLOWED_STYLES = {"", "whisper"}
 SAMPLE_RATE = 24000
 

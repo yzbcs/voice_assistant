@@ -1,0 +1,30 @@
+# ============================================================
+# 环境 2: asr (conda create -n asr python=3.11)
+# 终端 2: ASR vLLM 服务 (Mega-ASR materialized checkpoint)
+# 一次性: LoRA 合并 (python3 step2_asr_module.py --materialize)
+# ============================================================
+# 先装 PyTorch:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# Mega-ASR 仓库需单独 clone:
+#   git clone https://github.com/xzf-thu/Mega-ASR.git
+#   python3 Mega-ASR/scripts/download.py
+
+# --- vLLM 服务 ---
+vllm==0.19.1
+
+# --- Mega-ASR 核心 (LoRA 合并 + transformers 推理) ---
+qwen-asr                # Qwen3-ASR 基础模型
+safetensors             # 路由器权重加载
+peft                    # LoRA 加载和热切换
+
+# --- 音频处理 ---
+numpy
+scipy
+sounddevice
+soundfile
+
+# --- 通用 ---
+openai                  # vLLM Transcriptions API 客户端
+transformers>=4.46
+accelerate

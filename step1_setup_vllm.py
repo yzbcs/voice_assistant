@@ -115,20 +115,25 @@ def start_vllm_server():
 
 
 def print_asr_start_command():
-    """打印 ASR vLLM 服务的启动命令（需在另一终端运行）"""
-    model_path = config.ASR_MODEL_PATH
-    if "/path/to/" in model_path:
-        print("[ASR] 请先在 config.py 中设置 ASR_MODEL_PATH")
+    """打印 Mega-ASR vLLM 服务的启动命令（需在另一终端运行）"""
+    if "/path/to/" in config.MEGA_ASR_CKPT_DIR:
+        print("[ASR] 请先在 config.py 中设置 MEGA_ASR_CKPT_DIR")
         return
+
+    materialized_dir = os.path.join(config.MEGA_ASR_CKPT_DIR, "mega-asr-vllm-materialized")
+
+    print(f"\n[Mega-ASR] 如需语音功能，请按以下步骤操作:")
+    print(f"  1. 合并 LoRA 权重（仅需一次）:")
+    print(f"     python3 step2_asr_module.py --materialize")
+    print(f"  2. 在另一终端启动 ASR 服务:")
     cmd = (
-        f"vllm serve {model_path}"
+        f"vllm serve {materialized_dir}"
         f" --host {config.ASR_VLLM_HOST}"
         f" --port {config.ASR_VLLM_PORT}"
         f" --gpu-memory-utilization {config.ASR_VLLM_GPU_MEMORY_UTILIZATION}"
         f" --dtype auto"
     )
-    print(f"\n[ASR] 如需语音功能，请在另一终端运行:")
-    print(f"  {cmd}")
+    print(f"     {cmd}")
 
 
 if __name__ == "__main__":

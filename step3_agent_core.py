@@ -37,7 +37,7 @@ def synthesize_voice_reply(reply_text: str, gender: str, pitch: str, style: str 
     参数:
         reply_text: 要对用户说的中文回复文本，必须简洁自然。
         gender: 声音性别，只能是 "male" 或 "female"。
-        pitch: 音高，只能是 "low pitch"、"medium pitch" 或 "high pitch"。
+        pitch: 音高，只能是 "low pitch"、"moderate pitch" 或 "high pitch"。
         style: 声音风格，只能是 "" 或 "whisper"。
     """
     return json.dumps(

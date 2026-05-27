@@ -1,0 +1,33 @@
+# ============================================================
+# 环境 1: llm (conda create -n llm python=3.11)
+# 终端 1: LLM vLLM 服务 (Ministral-3-8B)
+# 终端 3: 主进程 step4_main.py (--mode text / stream)
+# ============================================================
+# 先装 PyTorch:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# --- LLM 推理服务 ---
+vllm==0.19.1
+mistral-common>=1.8.6
+
+# --- Agent 框架 ---
+langchain>=0.3
+langchain-openai>=0.3
+langchain-community>=0.3
+langgraph
+
+# --- TTS ---
+omnivoice
+soundfile
+
+# --- 音频录制 (step4_main.py) ---
+numpy
+scipy
+sounddevice
+
+# --- 通用 ---
+openai                  # vLLM API 客户端
+prompt_toolkit          # CLI 交互
+transformers>=4.46
+accelerate
+modelscope
