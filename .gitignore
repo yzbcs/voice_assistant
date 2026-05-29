@@ -36,6 +36,9 @@ assets/logs/*.log
 .DS_Store
 Thumbs.db
 
+# Mega-ASR repo (cloned separately)
+Mega-ASR-main/
+
 # Env files
 .env
 CLAUDE.md

@@ -231,7 +231,7 @@ class ASRModule:
     def transcribe_audio_array(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         """将 numpy 音频数组通过 vLLM Transcriptions API 转为文本
 
-        将 numpy 数组按 config.ASR_CHUNK_SIZE_SEC 切块后，通过 API 分段发送。
+        提交完整音频，单次 API 调用返回识别结果。
 
         参数:
             audio: PCM 音频数据（int16 或 float32），单声道
@@ -240,7 +240,23 @@ class ASRModule:
         返回:
             识别出的文本字符串
         """
-        return self.transcribe_audio_stream(audio, sample_rate=sample_rate)
+        if self.client is None:
+            return "[ERROR] ASR API 客户端未初始化"
+
+        try:
+            normalized_audio = self._normalize_audio(audio, sample_rate)
+            if len(normalized_audio) == 0:
+                return ""
+
+            wav_bytes = self._encode_wav(normalized_audio, config.STREAM_SAMPLE_RATE)
+            transcription = self.client.audio.transcriptions.create(
+                model=self.model_name,
+                file=("audio.wav", wav_bytes, "audio/wav"),
+                language=self._language_code(),
+            )
+            return transcription.text.strip()
+        except Exception as e:
+            return f"[ERROR] ASR API 调用失败: {e}"
 
     def transcribe_via_api(self, audio_path: str) -> str:
         """通过 vLLM Transcriptions API 识别音频文件
@@ -268,49 +284,8 @@ class ASRModule:
         except Exception as e:
             return f"[ERROR] ASR API 调用失败: {e}"
 
-    def transcribe_audio_stream(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
-        """将 numpy 音频数组切成多个 chunk，通过 vLLM API 顺序识别。"""
-        if self.client is None:
-            return "[ERROR] ASR API 客户端未初始化"
-
-        try:
-            normalized_audio = self._normalize_audio(audio, sample_rate)
-            if len(normalized_audio) == 0:
-                return ""
-
-            texts = []
-            for chunk in self._iter_audio_chunks(normalized_audio):
-                text = self.transcribe_audio_chunk(chunk, sample_rate=config.STREAM_SAMPLE_RATE)
-                if text.startswith("[ERROR]"):
-                    return text
-                if text:
-                    texts.append(text)
-            return " ".join(texts).strip()
-        except Exception as e:
-            return f"[ERROR] ASR API 调用失败: {e}"
-
-    def transcribe_audio_chunk(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
-        """识别单个音频 chunk。chunk 会被标准化并编码为 WAV bytes。"""
-        if self.client is None:
-            return "[ERROR] ASR API 客户端未初始化"
-
-        try:
-            normalized_audio = self._normalize_audio(audio, sample_rate)
-            if len(normalized_audio) == 0:
-                return ""
-
-            wav_bytes = self._encode_wav(normalized_audio, config.STREAM_SAMPLE_RATE)
-            transcription = self.client.audio.transcriptions.create(
-                model=self.model_name,
-                file=("audio.wav", wav_bytes, "audio/wav"),
-                language=self._language_code(),
-            )
-            return transcription.text.strip()
-        except Exception as e:
-            return f"[ERROR] ASR API 调用失败: {e}"
-
     # ============================================================
-    # 音频预处理工具（保持不变）
+    # 音频预处理工具
     # ============================================================
 
     @staticmethod
@@ -343,15 +318,6 @@ class ASRModule:
             audio = audio.astype(np.int16)
 
         return audio
-
-    @staticmethod
-    def _iter_audio_chunks(audio: np.ndarray):
-        """按 ASR_CHUNK_SIZE_SEC 生成音频 chunk。"""
-        chunk_samples = max(1, int(config.ASR_CHUNK_SIZE_SEC * config.STREAM_SAMPLE_RATE))
-        for start in range(0, len(audio), chunk_samples):
-            chunk = audio[start:start + chunk_samples]
-            if len(chunk) > 0:
-                yield chunk
 
     @staticmethod
     def _encode_wav(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
