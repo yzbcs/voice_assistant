@@ -164,16 +164,50 @@ def run_benchmark(
             # ---- Stage 3: 推理 ----
             t0 = time.perf_counter()
             if streaming:
-                response = asr.client.chat.completions.create(
-                    model=asr.model_name,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{b64_audio}"}},
-                        ]
-                    }],
-                )
-                text = response.choices[0].message.content.strip()
+                text = None
+
+                # 方法 1: Transcriptions API（官方格式: raw bytes）
+                try:
+                    with open(filepath, "rb") as raw_f:
+                        transcription = asr.client.audio.transcriptions.create(
+                            model=asr.model_name,
+                            file=raw_f,
+                        )
+                    text = transcription.text.strip()
+                except Exception as e1:
+                    if i == 0:
+                        print(f"  [Transcriptions API 失败] {type(e1).__name__}: {e1}")
+                        if hasattr(e1, "response") and hasattr(e1.response, "text"):
+                            print(f"    响应体: {e1.response.text[:500]}")
+
+                # 方法 2: Chat Completions（base64 audio_url）
+                if text is None:
+                    try:
+                        response = asr.client.chat.completions.create(
+                            model=asr.model_name,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {"type": "audio_url", "audio_url": {
+                                        "url": f"data:audio/wav;base64,{b64_audio}"
+                                    }},
+                                ]
+                            }],
+                        )
+                        text = response.choices[0].message.content.strip()
+                    except Exception as e2:
+                        if i == 0:
+                            print(f"  [Chat Completions 失败] {type(e2).__name__}: {e2}")
+                            if hasattr(e2, "response") and hasattr(e2.response, "text"):
+                                print(f"    响应体: {e2.response.text[:500]}")
+
+                if text is None:
+                    text = ""
+                    if i == 0:
+                        print("  [WARN] 两种 API 均失败，请检查:")
+                        print("    1. vLLM 是否安装了音频依赖: pip install 'vllm[audio]'")
+                        print("    2. 服务端日志是否有报错")
+                        print(f"    3. curl 测试: curl http://localhost:{config.ASR_VLLM_PORT}/v1/models")
             else:
                 text = asr.transcribe(filepath)
             t_infer = time.perf_counter() - t0
