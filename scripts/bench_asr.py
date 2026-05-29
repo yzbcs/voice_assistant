@@ -202,12 +202,12 @@ def run_benchmark(
                                 print(f"    响应体: {e2.response.text[:500]}")
 
                 if text is None:
-                    text = ""
                     if i == 0:
-                        print("  [WARN] 两种 API 均失败，请检查:")
+                        print("\n  [ERROR] 两种 API 均失败，跳过此文件。请检查:")
                         print("    1. vLLM 是否安装了音频依赖: pip install 'vllm[audio]'")
                         print("    2. 服务端日志是否有报错")
                         print(f"    3. curl 测试: curl http://localhost:{config.ASR_VLLM_PORT}/v1/models")
+                    break
             else:
                 text = asr.transcribe(filepath)
             t_infer = time.perf_counter() - t0
