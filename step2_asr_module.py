@@ -4,7 +4,7 @@
 
 提供两种识别模式:
   1. Transformers 模式: transcribe(audio_path) — MegaASR 类，支持 LoRA 动态路由
-  2. vLLM API 模式: transcribe_via_api(audio_path) — 通过 vLLM Transcriptions API（需预先合并 LoRA 权重）
+  2. vLLM API 模式: transcribe_via_api(audio_path) — 通过 vLLM Chat Completions API（需预先合并 LoRA 权重）
 
 用法:
     from step2_asr_module import ASRModule
@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 import sys
@@ -91,7 +92,7 @@ class ASRModule:
 
     支持两种后端:
       - Transformers 后端 (streaming=False): MegaASR 类，支持 LoRA 动态路由
-      - vLLM API 后端 (streaming=True): 通过 Transcriptions API（需先合并 LoRA 并启动 vLLM 服务）
+      - vLLM API 后端 (streaming=True): 通过 Chat Completions API（需先合并 LoRA 并启动 vLLM 服务）
 
     初始化参数:
         model_path: 基础模型路径，默认从 config.ASR_MODEL_PATH 读取
@@ -160,9 +161,10 @@ class ASRModule:
         print(f"[Mega-ASR] 模型加载完成，设备: {device_map}")
 
     def _init_vllm_client(self):
-        """初始化 vLLM Transcriptions API 客户端
+        """初始化 vLLM Chat Completions API 客户端
 
         使用 OpenAI 兼容客户端连接到 vLLM ASR 服务。
+        通过 Chat Completions API 传递 base64 音频进行识别。
         需要先合并 LoRA 权重并在另一终端启动 vLLM 服务。
         """
         from openai import OpenAI
@@ -229,9 +231,10 @@ class ASRModule:
             return f"[ERROR] Mega-ASR 推理失败: {e}"
 
     def transcribe_audio_array(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
-        """将 numpy 音频数组通过 vLLM Transcriptions API 转为文本
+        """将 numpy 音频数组通过 vLLM Chat Completions API 转为文本
 
-        提交完整音频，单次 API 调用返回识别结果。
+        音频经标准化、WAV 编码、base64 编码后，通过 Chat Completions API
+        以 audio_url 方式发送给 Qwen3-ASR 模型进行识别。
 
         参数:
             audio: PCM 音频数据（int16 或 float32），单声道
@@ -249,17 +252,26 @@ class ASRModule:
                 return ""
 
             wav_bytes = self._encode_wav(normalized_audio, config.STREAM_SAMPLE_RATE)
-            transcription = self.client.audio.transcriptions.create(
+            b64_audio = base64.b64encode(wav_bytes).decode("utf-8")
+
+            response = self.client.chat.completions.create(
                 model=self.model_name,
-                file=("audio.wav", wav_bytes, "audio/wav"),
-                language=self._language_code(),
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{b64_audio}"}},
+                    ]
+                }],
             )
-            return transcription.text.strip()
+            return response.choices[0].message.content.strip()
         except Exception as e:
             return f"[ERROR] ASR API 调用失败: {e}"
 
     def transcribe_via_api(self, audio_path: str) -> str:
-        """通过 vLLM Transcriptions API 识别音频文件
+        """通过 vLLM Chat Completions API 识别音频文件
+
+        读取音频文件并以 base64 编码通过 Chat Completions API
+        发送给 Qwen3-ASR 模型进行识别。
 
         参数:
             audio_path: 音频文件路径
@@ -275,12 +287,25 @@ class ASRModule:
 
         try:
             with open(audio_path, "rb") as f:
-                transcription = self.client.audio.transcriptions.create(
-                    model=self.model_name,
-                    file=f,
-                    language=self._language_code(),
-                )
-            return transcription.text.strip()
+                audio_bytes = f.read()
+
+            ext = os.path.splitext(audio_path)[1].lower()
+            mime_map = {".wav": "audio/wav", ".mp3": "audio/mpeg",
+                        ".flac": "audio/flac", ".ogg": "audio/ogg"}
+            mime_type = mime_map.get(ext, "audio/wav")
+
+            b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "audio_url", "audio_url": {"url": f"data:{mime_type};base64,{b64_audio}"}},
+                    ]
+                }],
+            )
+            return response.choices[0].message.content.strip()
         except Exception as e:
             return f"[ERROR] ASR API 调用失败: {e}"
 

@@ -53,8 +53,9 @@ vLLM 处理音频编码 + 解码
 文字逐 token 返回: "你" → "你好" → "你好请问" → "你好请问今天天气怎么样"
 ```
 
-- **Transcriptions API**（`/v1/audio/transcriptions`）：提交完整音频 → 返回完整识别文字
-- **Chat Completions + `stream: true`**（`/v1/chat/completions`）：提交完整音频 → 文字 token 逐个流式返回
+- **Chat Completions API**（`/v1/chat/completions`）：提交 base64 编码的音频 → 返回完整识别文字
+  - Qwen3-ASR 不支持 vLLM Transcriptions API（`/v1/audio/transcriptions` 仅供 Whisper 类模型使用），必须通过 Chat Completions API 的 `audio_url` 内容类型传递 base64 音频
+- **Chat Completions + `stream: true`**：提交完整音频 → 文字 token 逐个流式返回
 
 ### 真流式为什么不可用
 
@@ -90,8 +91,11 @@ MEGA_ASR_CKPT_DIR = "/asr-ckpt/Mega-ASR"
 ### Step 1: 合并 LoRA 权重（首次，可在本地完成）
 
 ```bash
-python3 step2_asr_module.py --materialize
-# 输出: <MEGA_ASR_CKPT_DIR>/mega-asr-vllm-materialized/
+python3 scripts/merge_lora.py \
+    --base <MEGA_ASR_CKPT_DIR>/Qwen3-ASR-1.7B \
+    --lora <MEGA_ASR_CKPT_DIR>/mega-asr-merged \
+    --output <MEGA_ASR_CKPT_DIR>/mega-asr-vllm-materialized
+# 仅需 torch + safetensors，无需 GPU，可在 Mac 上完成
 ```
 
 ### Step 2: 启动 Docker 容器
@@ -146,7 +150,39 @@ python3 step4_main.py --mode stream
 
 ---
 
-## 4. 三种模式对比
+## 4. ASR 性能单测
+
+`scripts/bench_asr.py` 可独立测试 ASR 模型的延迟、RTF、WER、多轮一致性。
+
+```bash
+# vLLM API 模式（需先 bash run.sh asr 启动服务）
+bash run.sh bench --mode api --audio test.wav
+
+# Transformers 模式（进程内加载）
+bash run.sh bench --mode local --audio test.wav
+
+# 批量测目录下所有音频
+bash run.sh bench --mode api --audio assets/input/
+
+# 计算 WER（提供参考文本）
+bash run.sh bench --mode api --audio test.wav --gt "你好世界"
+
+# 多轮取平均
+bash run.sh bench --mode api --audio test.wav --rounds 5
+```
+
+输出指标：
+
+| 指标 | 说明 |
+|------|------|
+| 延迟 (avg/min/max/std) | 单次识别耗时 |
+| RTF | Real-Time Factor，< 1 表示比实时快 |
+| WER | 词/字错误率（需 `--gt`） |
+| 多轮一致性 | 多轮结果文本是否完全相同 |
+
+---
+
+## 5. 三种模式对比
 
 | 模式 | 命令 | ASR 后端 | 识别延迟 | 特点 |
 |------|------|----------|---------|------|
@@ -156,7 +192,7 @@ python3 step4_main.py --mode stream
 
 ---
 
-## 5. 依赖环境
+## 6. 依赖环境
 
 ### 容器 (vLLM 0.21rc1)
 
@@ -167,7 +203,6 @@ mistral-common>=1.8.6
 langchain>=0.3
 langchain-openai>=0.3
 langchain-community>=0.3
-langgraph
 transformers>=4.56.0,<5.0.0
 accelerate
 numpy
@@ -178,7 +213,6 @@ prompt_toolkit
 wcwidth
 openai
 safetensors
-peft
 omnivoice
 ```
 
@@ -190,7 +224,7 @@ omnivoice
 
 ---
 
-## 6. TTS 限制
+## 7. TTS 限制
 
 OmniVoice **不支持流式输出**：必须等 LLM 输出完整文本 → TTS 合成完整音频 → 才能播放。
 
@@ -206,7 +240,7 @@ TTS 合成:   ~3-8s (完整音频)    ← 瓶颈，不支持流式
 
 ---
 
-## 7. 实验推进历程
+## 8. 实验推进历程
 
 ### Round 1: 初始方案设计
 - **动机**: 在 Jetson Thor 上搭建端到端语音助手

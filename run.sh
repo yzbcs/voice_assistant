@@ -8,6 +8,7 @@
 #   bash run.sh voice     # 终端 3: 语音模式（Mega-ASR transformers + LoRA 路由）
 #   bash run.sh stream    # 终端 3: 流式 ASR 模式（推荐）
 #   bash run.sh check     # 检查服务是否在线
+#   bash run.sh bench     # ASR 性能单测
 
 set -euo pipefail
 
@@ -40,7 +41,10 @@ case "${1:-help}" in
 
         echo ""
         echo "=== 合并 Mega-ASR LoRA 权重（一次性） ==="
-        python3 step2_asr_module.py --materialize
+        python3 scripts/merge_lora.py \
+            --base "${MEGA_ASR_CKPT_DIR}/Qwen3-ASR-1.7B" \
+            --lora "${MEGA_ASR_CKPT_DIR}/mega-asr-merged" \
+            --output "${MEGA_ASR_CKPT_DIR}/mega-asr-vllm-materialized"
 
         echo ""
         echo "=== 完成！接下来运行: ==="
@@ -132,6 +136,12 @@ case "${1:-help}" in
         fi
         ;;
 
+    bench)
+        shift
+        echo "=== ASR 性能单测 ==="
+        python3 scripts/bench_asr.py "$@"
+        ;;
+
     help|*)
         echo "用法: bash run.sh <命令>"
         echo ""
@@ -143,5 +153,6 @@ case "${1:-help}" in
         echo "  voice    语音模式 - Mega-ASR transformers + LoRA 路由（终端 3）"
         echo "  stream   流式 ASR 模式 - 推荐（终端 3）"
         echo "  check    检查 LLM / ASR 服务是否在线"
+        echo "  bench    ASR 性能单测 (参数: --mode api/local --audio <path> [--gt <text>] [--rounds N])"
         ;;
 esac

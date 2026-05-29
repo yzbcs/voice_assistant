@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import time
+import base64
 
 import numpy as np
 
@@ -152,31 +153,27 @@ def run_benchmark(
 
             # ---- Stage 2: 预处理（仅 api 模式） ----
             t_preprocess = 0.0
-            wav_bytes = None
+            b64_audio = None
             if streaming:
                 t0 = time.perf_counter()
                 normalized = asr._normalize_audio(audio_data, 16000)
                 wav_bytes = asr._encode_wav(normalized, config.STREAM_SAMPLE_RATE)
+                b64_audio = base64.b64encode(wav_bytes).decode("utf-8")
                 t_preprocess = time.perf_counter() - t0
 
             # ---- Stage 3: 推理 ----
             t0 = time.perf_counter()
             if streaming:
-                # 优先用重编码的 WAV，失败则回退发送原始文件
-                try:
-                    transcription = asr.client.audio.transcriptions.create(
-                        model=asr.model_name,
-                        file=("audio.wav", wav_bytes, "audio/wav"),
-                        language=asr._language_code(),
-                    )
-                except Exception:
-                    with open(filepath, "rb") as raw_f:
-                        transcription = asr.client.audio.transcriptions.create(
-                            model=asr.model_name,
-                            file=raw_f,
-                            language=asr._language_code(),
-                        )
-                text = transcription.text.strip()
+                response = asr.client.chat.completions.create(
+                    model=asr.model_name,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{b64_audio}"}},
+                        ]
+                    }],
+                )
+                text = response.choices[0].message.content.strip()
             else:
                 text = asr.transcribe(filepath)
             t_infer = time.perf_counter() - t0
