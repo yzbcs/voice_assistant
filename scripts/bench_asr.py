@@ -15,12 +15,14 @@ Measured stages for --endpoint chat:
   total       End-to-end time for load + normalize + encode + infer.
 
 Measured stages for --endpoint transcriptions:
-  load        Read the raw audio file bytes.
+  load        Read and decode the audio file.
+  normalize   Convert to mono 16 kHz int16 PCM.
+  encode      Encode as WAV bytes for upload.
   connect     Create the streaming transcription response object.
   ttft        Time to first non-empty streamed transcription delta.
   stream      Time from first text delta to stream completion.
   infer       Full API streaming time, including connect and generation.
-  total       End-to-end time for load + infer.
+  total       End-to-end time for load + normalize + encode + infer.
 
 Usage:
   python3 scripts/bench_asr.py --audio assets/input/test.wav
@@ -51,6 +53,7 @@ TARGET_SAMPLE_RATE = 16000
 @dataclass
 class AudioPayload:
     data_url: str
+    wav_bytes: bytes
     duration_s: float
     source_sample_rate: int
     num_samples: int
@@ -135,15 +138,20 @@ def normalize_audio(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     return audio
 
 
-def encode_wav_data_url(audio: np.ndarray, sample_rate: int = TARGET_SAMPLE_RATE) -> str:
-    """Encode int16 PCM as a WAV data URL accepted by vLLM audio_url input."""
+def encode_wav_bytes(audio: np.ndarray, sample_rate: int = TARGET_SAMPLE_RATE) -> bytes:
+    """Encode int16 PCM as WAV bytes."""
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(audio.tobytes())
-    b64_audio = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return buf.getvalue()
+
+
+def encode_wav_data_url(wav_bytes: bytes) -> str:
+    """Encode WAV bytes as a data URL accepted by vLLM audio_url input."""
+    b64_audio = base64.b64encode(wav_bytes).decode("utf-8")
     return f"data:audio/wav;base64,{b64_audio}"
 
 
@@ -160,11 +168,13 @@ def prepare_audio_payload(path: str) -> tuple[AudioPayload, Dict[str, float]]:
     timings["normalize"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    data_url = encode_wav_data_url(normalized)
+    wav_bytes = encode_wav_bytes(normalized)
+    data_url = encode_wav_data_url(wav_bytes)
     timings["encode"] = time.perf_counter() - t0
 
     payload = AudioPayload(
         data_url=data_url,
+        wav_bytes=wav_bytes,
         duration_s=len(normalized) / TARGET_SAMPLE_RATE,
         source_sample_rate=source_sample_rate,
         num_samples=len(normalized),
@@ -273,7 +283,7 @@ def stream_transcribe(
 def stream_transcribe_audio_api(
     client,
     model: str,
-    audio_path: str,
+    wav_bytes: bytes,
     language: Optional[str],
     print_stream: bool,
 ) -> StreamResult:
@@ -291,21 +301,23 @@ def stream_transcribe_audio_api(
         kwargs["language"] = language
 
     infer_start = time.perf_counter()
-    with open(audio_path, "rb") as audio_file:
-        response = client.audio.transcriptions.create(file=audio_file, **kwargs)
-        timings["connect"] = time.perf_counter() - infer_start
+    response = client.audio.transcriptions.create(
+        file=("audio.wav", wav_bytes, "audio/wav"),
+        **kwargs,
+    )
+    timings["connect"] = time.perf_counter() - infer_start
 
-        for event in response:
-            delta_text = extract_transcription_text(event)
-            if not delta_text:
-                continue
-            now = time.perf_counter()
-            if first_text_at is None:
-                first_text_at = now
-            chunks += 1
-            text_parts.append(delta_text)
-            if print_stream:
-                print(delta_text, end="", flush=True)
+    for event in response:
+        delta_text = extract_transcription_text(event)
+        if not delta_text:
+            continue
+        now = time.perf_counter()
+        if first_text_at is None:
+            first_text_at = now
+        chunks += 1
+        text_parts.append(delta_text)
+        if print_stream:
+            print(delta_text, end="", flush=True)
 
     infer_end = time.perf_counter()
     if print_stream:
@@ -320,7 +332,7 @@ def stream_transcribe_audio_api(
 def transcribe_audio_api(
     client,
     model: str,
-    audio_path: str,
+    wav_bytes: bytes,
     language: Optional[str],
 ) -> StreamResult:
     """Use /v1/audio/transcriptions without streaming."""
@@ -329,8 +341,10 @@ def transcribe_audio_api(
         kwargs["language"] = language
 
     infer_start = time.perf_counter()
-    with open(audio_path, "rb") as audio_file:
-        result = client.audio.transcriptions.create(file=audio_file, **kwargs)
+    result = client.audio.transcriptions.create(
+        file=("audio.wav", wav_bytes, "audio/wav"),
+        **kwargs,
+    )
     infer_end = time.perf_counter()
 
     text = getattr(result, "text", "")
@@ -343,12 +357,6 @@ def transcribe_audio_api(
     return StreamResult(text=str(text).strip(), timings=timings, chunks=1 if text else 0)
 
 
-def read_audio_file(path: str) -> Dict[str, float]:
-    """Read raw audio bytes for endpoint=transcriptions and time the operation."""
-    t0 = time.perf_counter()
-    with open(path, "rb") as audio_file:
-        audio_file.read()
-    return {"load": time.perf_counter() - t0, "normalize": 0.0, "encode": 0.0}
 
 
 def calc_wer(hypothesis: str, reference: str) -> float:
@@ -444,11 +452,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     payload, timings = prepare_audio_payload(filepath)
                     duration_s = payload.duration_s
                 else:
-                    timings = read_audio_file(filepath)
-                    audio, sample_rate = load_audio(filepath)
-                    normalized = normalize_audio(audio, sample_rate)
-                    duration_s = len(normalized) / TARGET_SAMPLE_RATE
-                    payload = None
+                    payload, timings = prepare_audio_payload(filepath)
+                    duration_s = payload.duration_s
             except Exception as exc:
                 print(f"  [ERROR] 音频读取/预处理失败: {type(exc).__name__}: {exc}")
                 break
@@ -469,7 +474,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     stream_result = transcribe_audio_api(
                         client=client,
                         model=args.model,
-                        audio_path=filepath,
+                        wav_bytes=payload.wav_bytes,
                         language=args.language,
                     )
                     print(stream_result.text)
@@ -477,7 +482,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     stream_result = stream_transcribe_audio_api(
                         client=client,
                         model=args.model,
-                        audio_path=filepath,
+                        wav_bytes=payload.wav_bytes,
                         language=args.language,
                         print_stream=not args.no_print_stream,
                     )
