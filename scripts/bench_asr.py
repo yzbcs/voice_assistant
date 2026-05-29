@@ -4,7 +4,7 @@ Default target:
   vLLM OpenAI-compatible server at http://localhost:8000/v1
   model name: mega
 
-Measured stages:
+Measured stages for --endpoint chat:
   load        Read and decode the audio file.
   normalize   Convert to mono 16 kHz int16 PCM.
   encode      Encode as WAV bytes and base64 data URL.
@@ -14,9 +14,18 @@ Measured stages:
   infer       Full API streaming time, including connect and generation.
   total       End-to-end time for load + normalize + encode + infer.
 
+Measured stages for --endpoint transcriptions:
+  load        Read the raw audio file bytes.
+  connect     Create the streaming transcription response object.
+  ttft        Time to first non-empty streamed transcription delta.
+  stream      Time from first text delta to stream completion.
+  infer       Full API streaming time, including connect and generation.
+  total       End-to-end time for load + infer.
+
 Usage:
   python3 scripts/bench_asr.py --audio assets/input/test.wav
   python3 scripts/bench_asr.py --audio assets/input/test.wav --host localhost --port 8000 --model mega
+  python3 scripts/bench_asr.py --audio assets/input/test.wav --endpoint chat
   python3 scripts/bench_asr.py --audio assets/input/ --rounds 3
   python3 scripts/bench_asr.py --audio test.wav --gt "你好世界"
 """
@@ -184,6 +193,30 @@ def extract_delta_text(chunk) -> str:
     return ""
 
 
+def extract_transcription_text(event) -> str:
+    """Extract streamed text from OpenAI-compatible transcription events."""
+    if isinstance(event, str):
+        return event
+    if isinstance(event, dict):
+        return str(
+            event.get("delta")
+            or event.get("text")
+            or event.get("transcript")
+            or ""
+        )
+
+    event_type = getattr(event, "type", "")
+    if event_type and event_type not in {"transcription.delta", "transcript.text.delta"}:
+        text = getattr(event, "text", None)
+        return text if isinstance(text, str) else ""
+
+    for attr in ("delta", "text", "transcript"):
+        value = getattr(event, attr, None)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
 def stream_transcribe(
     client,
     model: str,
@@ -235,6 +268,87 @@ def stream_transcribe(
     timings["stream"] = (infer_end - first_text_at) if first_text_at else 0.0
     timings["infer"] = infer_end - infer_start
     return StreamResult(text="".join(text_parts).strip(), timings=timings, chunks=chunks)
+
+
+def stream_transcribe_audio_api(
+    client,
+    model: str,
+    audio_path: str,
+    language: Optional[str],
+    print_stream: bool,
+) -> StreamResult:
+    """Use /v1/audio/transcriptions and consume streamed text output."""
+    timings: Dict[str, float] = {}
+    text_parts: List[str] = []
+    chunks = 0
+    first_text_at: Optional[float] = None
+
+    kwargs = {
+        "model": model,
+        "stream": True,
+    }
+    if language:
+        kwargs["language"] = language
+
+    infer_start = time.perf_counter()
+    with open(audio_path, "rb") as audio_file:
+        response = client.audio.transcriptions.create(file=audio_file, **kwargs)
+        timings["connect"] = time.perf_counter() - infer_start
+
+        for event in response:
+            delta_text = extract_transcription_text(event)
+            if not delta_text:
+                continue
+            now = time.perf_counter()
+            if first_text_at is None:
+                first_text_at = now
+            chunks += 1
+            text_parts.append(delta_text)
+            if print_stream:
+                print(delta_text, end="", flush=True)
+
+    infer_end = time.perf_counter()
+    if print_stream:
+        print()
+
+    timings["ttft"] = (first_text_at - infer_start) if first_text_at else float("nan")
+    timings["stream"] = (infer_end - first_text_at) if first_text_at else 0.0
+    timings["infer"] = infer_end - infer_start
+    return StreamResult(text="".join(text_parts).strip(), timings=timings, chunks=chunks)
+
+
+def transcribe_audio_api(
+    client,
+    model: str,
+    audio_path: str,
+    language: Optional[str],
+) -> StreamResult:
+    """Use /v1/audio/transcriptions without streaming."""
+    kwargs = {"model": model}
+    if language:
+        kwargs["language"] = language
+
+    infer_start = time.perf_counter()
+    with open(audio_path, "rb") as audio_file:
+        result = client.audio.transcriptions.create(file=audio_file, **kwargs)
+    infer_end = time.perf_counter()
+
+    text = getattr(result, "text", "")
+    timings = {
+        "connect": 0.0,
+        "ttft": float("nan"),
+        "stream": 0.0,
+        "infer": infer_end - infer_start,
+    }
+    return StreamResult(text=str(text).strip(), timings=timings, chunks=1 if text else 0)
+
+
+def read_audio_file(path: str) -> Dict[str, float]:
+    """Read raw audio bytes for endpoint=transcriptions and time the operation."""
+    t0 = time.perf_counter()
+    with open(path, "rb") as audio_file:
+        audio_file.read()
+    return {"load": time.perf_counter() - t0, "normalize": 0.0, "encode": 0.0}
 
 
 def calc_wer(hypothesis: str, reference: str) -> float:
@@ -326,22 +440,47 @@ def run_benchmark(args: argparse.Namespace) -> int:
         for round_idx in range(args.rounds):
             total_start = time.perf_counter()
             try:
-                payload, timings = prepare_audio_payload(filepath)
-                duration_s = payload.duration_s
+                if args.endpoint == "chat":
+                    payload, timings = prepare_audio_payload(filepath)
+                    duration_s = payload.duration_s
+                else:
+                    timings = read_audio_file(filepath)
+                    audio, sample_rate = load_audio(filepath)
+                    normalized = normalize_audio(audio, sample_rate)
+                    duration_s = len(normalized) / TARGET_SAMPLE_RATE
+                    payload = None
             except Exception as exc:
-                print(f"  [ERROR] 音频预处理失败: {type(exc).__name__}: {exc}")
+                print(f"  [ERROR] 音频读取/预处理失败: {type(exc).__name__}: {exc}")
                 break
 
-            print(f"  第 {round_idx + 1}/{args.rounds} 轮流式输出: ", end="", flush=True)
+            output_label = "流式输出" if not args.no_stream else "转写输出"
+            print(f"  第 {round_idx + 1}/{args.rounds} 轮{output_label}: ", end="", flush=True)
             try:
-                stream_result = stream_transcribe(
-                    client=client,
-                    model=args.model,
-                    payload=payload,
-                    prompt=args.prompt,
-                    temperature=args.temperature,
-                    print_stream=not args.no_print_stream,
-                )
+                if args.endpoint == "chat":
+                    stream_result = stream_transcribe(
+                        client=client,
+                        model=args.model,
+                        payload=payload,
+                        prompt=args.prompt,
+                        temperature=args.temperature,
+                        print_stream=not args.no_print_stream,
+                    )
+                elif args.no_stream:
+                    stream_result = transcribe_audio_api(
+                        client=client,
+                        model=args.model,
+                        audio_path=filepath,
+                        language=args.language,
+                    )
+                    print(stream_result.text)
+                else:
+                    stream_result = stream_transcribe_audio_api(
+                        client=client,
+                        model=args.model,
+                        audio_path=filepath,
+                        language=args.language,
+                        print_stream=not args.no_print_stream,
+                    )
             except Exception as exc:
                 print()
                 print(f"  [ERROR] API 调用失败: {type(exc).__name__}: {exc}")
@@ -432,15 +571,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="localhost", help="vLLM host，默认 localhost")
     parser.add_argument("--port", type=int, default=8000, help="vLLM port，默认 8000")
     parser.add_argument("--model", default="mega", help="vLLM served model name，默认 mega")
+    parser.add_argument(
+        "--endpoint",
+        choices=["transcriptions", "chat"],
+        default="transcriptions",
+        help="API endpoint: transcriptions 使用 /v1/audio/transcriptions；chat 使用 /v1/chat/completions",
+    )
     parser.add_argument("--api-key", default="EMPTY", help="OpenAI compatible API key，默认 EMPTY")
     parser.add_argument("--rounds", type=int, default=1, help="每个文件测试轮数")
     parser.add_argument("--gt", default=None, help="ground truth 文本，单文件时用于计算 WER/CER")
+    parser.add_argument("--language", default=None, help="转写语言，例如 zh 或 en；默认不传")
     parser.add_argument(
         "--prompt",
         default="请将这段音频完整转写为文本，只输出转写结果。",
-        help="发送给 ASR 模型的文本提示",
+        help="chat endpoint 使用的文本提示",
     )
     parser.add_argument("--temperature", type=float, default=0.0, help="采样温度，默认 0")
+    parser.add_argument("--no-stream", action="store_true", help="transcriptions endpoint 使用非流式请求")
     parser.add_argument("--no-print-stream", action="store_true", help="不在接收时逐块打印流式文本")
     return parser.parse_args()
 
