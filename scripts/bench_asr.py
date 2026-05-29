@@ -27,7 +27,7 @@ Measured stages for --endpoint transcriptions:
 Usage:
   python3 scripts/bench_asr.py --audio assets/input/test.wav
   python3 scripts/bench_asr.py --audio assets/input/test.wav --host localhost --port 8000 --model mega
-  python3 scripts/bench_asr.py --audio assets/input/test.wav --endpoint chat
+  python3 scripts/bench_asr.py --audio assets/input/test.wav --endpoint transcriptions
   python3 scripts/bench_asr.py --audio assets/input/ --rounds 3
   python3 scripts/bench_asr.py --audio test.wav --gt "你好世界"
 """
@@ -236,12 +236,15 @@ def stream_transcribe(
     print_stream: bool,
 ) -> StreamResult:
     """Send one complete audio file and consume streamed text output."""
+    content = [
+        {"type": "audio_url", "audio_url": {"url": payload.data_url}},
+    ]
+    if prompt:
+        content.append({"type": "text", "text": prompt})
+
     messages = [{
         "role": "user",
-        "content": [
-            {"type": "audio_url", "audio_url": {"url": payload.data_url}},
-            {"type": "text", "text": prompt},
-        ],
+        "content": content,
     }]
 
     timings: Dict[str, float] = {}
@@ -579,8 +582,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--endpoint",
         choices=["transcriptions", "chat"],
-        default="transcriptions",
-        help="API endpoint: transcriptions 使用 /v1/audio/transcriptions；chat 使用 /v1/chat/completions",
+        default="chat",
+        help="API endpoint: chat 使用 /v1/chat/completions；transcriptions 仅用于支持 /v1/audio/transcriptions 的服务",
     )
     parser.add_argument("--api-key", default="EMPTY", help="OpenAI compatible API key，默认 EMPTY")
     parser.add_argument("--rounds", type=int, default=1, help="每个文件测试轮数")
@@ -588,8 +591,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default=None, help="转写语言，例如 zh 或 en；默认不传")
     parser.add_argument(
         "--prompt",
-        default="请将这段音频完整转写为文本，只输出转写结果。",
-        help="chat endpoint 使用的文本提示",
+        default="",
+        help="chat endpoint 可选文本提示；默认不传，保持和 Qwen3-ASR 官方示例一致",
     )
     parser.add_argument("--temperature", type=float, default=0.0, help="采样温度，默认 0")
     parser.add_argument("--no-stream", action="store_true", help="transcriptions endpoint 使用非流式请求")
